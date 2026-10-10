@@ -10,7 +10,7 @@ readme = "README.org"
 [dependencies]
 rrd = "0.3.1"
 kal-fs-watch = "0.1"
-kal-sse = { version = "0.1", features = ["axum"] }
+kal-sse = { version = "0.2", features = ["axum"] }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
