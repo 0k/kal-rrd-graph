@@ -1,0 +1,28 @@
+[package]
+name = "kal-rrd-graph"
+version = "0.1.0"
+edition = "2021"
+description = "Describe, fetch, watch and serve one YAML-configured RRD graph"
+license = "MIT"
+authors = ["Valentin Lab <valentin.lab@kalysto.org>"]
+readme = "README.org"
+
+[dependencies]
+rrd = "0.3.1"
+kal-fs-watch = "0.1"
+kal-sse = { version = "0.1", features = ["axum"] }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+regex = "1"
+thiserror = "1"
+axum = "0.8"
+futures-core = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
+
+[dev-dependencies]
+indoc = "2"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

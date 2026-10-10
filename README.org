@@ -1,0 +1,133 @@
+#+TITLE: kal-rrd-graph
+
+* Description
+
+=kal-rrd-graph= describes, fetches, watches and serves one RRD graph.
+It reads through =rrd= / librrd and never writes RRD files outside tests.
+It does not know about application groups, side panels, ranges, slugs or
+configuration reload policy. Applications can
+embed one graph beside their own controls with =@0k/rrd-graph=.
+
+* Usage
+
+Add ~kal-rrd-graph = "0.1"~ to ~Cargo.toml~. Before publication, develop
+against a sibling through a git-ignored ~.cargo/config.toml~:
+
+#+begin_src toml
+[patch.crates-io]
+kal-rrd-graph = { path = "../kal-rrd-graph" }
+#+end_src
+
+The host assigns an opaque id and title, resolves the RRD directory, and
+supplies its diagnostic path. No tree is required:
+
+#+begin_src rust
+use kal_rrd_graph::{GraphFields, graph::{build, Window}};
+
+let fields = GraphFields::parse("files: temperature.rrd\nds: value\nunit: °C")?;
+let graph = fields.build("boiler".into(), "Boiler".into(), "Boiler",
+    Some("/var/lib/boiler/rrd".into()))?;
+let data = build(&graph, Window::from_points(start, end, 800), None);
+#+end_src
+
+~GraphFields~ can also be flattened into a host's YAML node, so the host
+keeps its navigation and path inheritance while this crate validates all
+graph keys. ~ConfigError::Invalid~ retains the supplied diagnostic path.
+Missing data yields per-graph ~notes~, not a configuration error.
+
+** HTTP and file watching
+
+#+begin_src rust
+use std::sync::Arc;
+use kal_rrd_graph::{Graph, GraphSource, Lookup, api, watch::GraphWatch};
+
+struct Single(Graph);
+impl GraphSource for Single {
+    fn lookup(&self, id: &str) -> Lookup {
+        if id == self.0.id { Lookup::Graph(Box::new(self.0.clone())) }
+        else { Lookup::NotFound }
+    }
+}
+let source: Arc<dyn GraphSource> = Arc::new(Single(graph));
+let watch = GraphWatch::new(source.clone())?;
+let router = api::router(api::ApiState { source, watch });
+// Merge router into the application's axum router.
+#+end_src
+
+~GraphSource: Send + Sync + 'static~ has three methods:
+
+- ~lookup(&self, id: &str) -> Lookup~ returns ~Graph(Box<Graph>)~,
+  ~NotAGraph~ or ~NotFound~. The last two retain HTTP 400 and 404.
+- ~revision(&self) -> u64~ defaults to zero for fixed sources. A host
+  with reloads advances it after each successful validated change.
+- ~lookup_many(&self, ids: &[String]) -> Vec<Lookup>~ defaults to
+  calling ~lookup~ in input order. Mutable sources override it to
+  resolve one watch operation from one configuration snapshot.
+
+The watcher reads the revision before resolving a snapshot. A concurrent
+newer reload is detected on the next tick rather than being mistaken for
+an already-applied revision. Invalid host reloads must retain the prior
+validated graphs and revision. The host owns reload errors and their UI.
+
+The router provides ~GET api/graph~, ~GET api/watch~ and
+~GET api/watch/events~. It does not provide ~api/tree~ or ~api/config~.
+Mounting prefixes is the application's responsibility. Frontend callers
+use relative URLs and a configurable API base.
+
+* Graph YAML keys
+
+| Key            | Default              | Description                                                                               |
+|----------------+----------------------+-------------------------------------------------------------------------------------------|
+| ~files~        | (required)           | Path relative to ~rrd-dir~; each ~*~ matches within one path component                    |
+| ~ds~           |                      | Data source to read from every matched file (one series per file)                         |
+| ~series~       |                      | List of ~{ds, label}~ to read from every matched file                                     |
+| ~label~        | captures, ~/~-joined | Template naming each file's series; ~{N}~ is the N-th ~*~ of ~files~                      |
+| ~unit~         | none                 | ~bytes~ and ~bytes/s~ use binary prefixes; any other unit uses SI prefixes                |
+| ~type~         | ~line~               | ~line~ or ~stacked~                                                                       |
+| ~stack-toggle~ | ~false~              | Show a switch to stack/unstack the series; ~type~ sets the initial layout                 |
+| ~top~          | all                  | Keep the N series with the largest mean; sum the others into ~other (k)~                  |
+| ~min-max~      | ~false~              | Also read the MIN and MAX archives and draw the band around the average                   |
+| ~scale~        | ~1~                  | Multiply every value (e.g. ~1024~ for sizes stored in KiB)                                |
+| ~valid-max~    | none                 | Treat stored values above it as unknown (e.g. counter resets read as wraps)               |
+| ~hold~         | none                 | Repeat the last known value over unknown points up to this long (~90~, ~30m~, ~2h~, ~1d~) |
+
+Set exactly one of ~ds~ and ~series~. When there are several files and
+several series, each series is named ~<file label> <series label>~.
+~hold~ accepts positive seconds or ~s/m/h/d/w/y~ durations; a year is
+365 days. Unknown keys, empty series, invalid captures, zero ~top~,
+nonfinite/zero scale and nonfinite valid-max are rejected strictly.
+
+* API contract
+
+~api/graph?id=...&start=...&end=...&points=...~ requests UNIX-second
+windows. ~points~ defaults to 800, accepts 10 through 5000, and is
+exclusive with ~step~. An explicit positive ~step~ preserves a previous
+response's common time grid and may not request more than 5000 points.
+Repeated ~keep=<label>~ parameters preserve a ~top~ graph's winners.
+
+The JSON has ~id~, ~title~, ~unit~, ~type~, ~start~, ~step~, ~len~,
+~series~ (~label~, ~avg~, optional ~min~/~max~), ~last_update~ and
+~notes~. Unknown values are ~null~; missing files or data sources are
+notes. Point ~i~ summarises the interval ending at ~start + i * step~.
+
+~api/watch?id=...&id=...[&sub=<uuid>]~ registers sorted, deduplicated
+graph interests and returns ~{ids}~, ~x-sub-id~, ~x-snapshot-index~.
+~api/watch/events?sub=<uuid>~ replays/pushes indexed ~{id}~ events through
+=kal-sse=. Unknown/expired subscriptions require a fresh snapshot
+(HTTP 409 ~needs_snapshot~). Files settle for 1 second; interests are
+released 30 seconds after the last stream disconnects. Reads do not
+trigger change events. File notifications use =kal-fs-watch=.
+
+* Development
+
+Requires ~librrd-dev~ to build and the librrd shared library to run.
+
+#+begin_src sh
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+#+end_src
+
+* License
+
+MIT, Valentin Lab.
