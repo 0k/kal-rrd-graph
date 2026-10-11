@@ -1,5 +1,9 @@
 #+TITLE: kal-rrd-graph
 
+[[https://crates.io/crates/kal-rrd-graph][https://img.shields.io/crates/v/kal-rrd-graph.svg]]
+[[https://docs.rs/kal-rrd-graph][https://docs.rs/kal-rrd-graph/badge.svg]]
+[[https://github.com/0k/kal-rrd-graph/blob/master/LICENSE][https://img.shields.io/badge/license-MIT-blue.svg]]
+
 * Description
 
 =kal-rrd-graph= describes, fetches, watches and serves one RRD graph.

@@ -1,2 +1,7 @@
 /target
 /.cargo/
+/Cargo.lock
+/README.md
+/.pkg/
+AGENTS.local.md
+CLAUDE.local.md

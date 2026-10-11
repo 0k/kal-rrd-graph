@@ -1,11 +1,25 @@
 [package]
 name = "kal-rrd-graph"
-version = "0.1.0"
+version = "%%version%%"
 edition = "2021"
 description = "Describe, fetch, watch and serve one YAML-configured RRD graph"
 license = "MIT"
 authors = ["Valentin Lab <valentin.lab@kalysto.org>"]
-readme = "README.org"
+repository = "https://github.com/0k/kal-rrd-graph"
+readme = "README.md"
+keywords = ["rrd", "rrdtool", "time-series", "graph", "sse"]
+categories = ["visualization", "web-programming::http-server"]
+exclude = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    "README.org",
+    "autogen.sh",
+    ".gitchangelog.rc",
+    ".gitignore",
+    ".package.d/",
+    ".pkg/",
+]
 
 [dependencies]
 rrd = "0.3.1"
@@ -26,3 +40,5 @@ indoc = "2"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+
+[workspace]
