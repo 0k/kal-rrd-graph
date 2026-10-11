@@ -404,6 +404,106 @@ async fn explicit_step_tail_and_hold_match_full_real_rrd_values() {
 }
 
 #[tokio::test]
+async fn unstyled_graph_json_has_exactly_the_original_fields() {
+    let f = fixture();
+    let (_, g) = get(&f, &graph_uri("host-a/load")).await;
+    let keys = |v: &Value| -> Vec<String> { v.as_object().unwrap().keys().cloned().collect() };
+    let mut top = keys(&g);
+    top.sort();
+    assert_eq!(
+        top,
+        [
+            "id",
+            "last_update",
+            "len",
+            "notes",
+            "series",
+            "start",
+            "step",
+            "title",
+            "type",
+            "unit"
+        ]
+    );
+    for series in g["series"].as_array().unwrap() {
+        let mut fields = keys(series);
+        fields.sort();
+        assert_eq!(fields, ["avg", "label", "max", "min"]);
+    }
+}
+
+#[tokio::test]
+async fn styled_graph_carries_drawing_keys_and_computed_band_and_diff() {
+    let f = fixture();
+    {
+        let _writes = FIXTURE_WRITES.lock().unwrap();
+        // current, sel per slot: below, equal, above, unknown current.
+        rrd_file(
+            f.dir.path(),
+            "boiler/zones/1/temperature.rrd",
+            &["current", "sel"],
+            &[
+                &[18.0, 20.0],
+                &[19.0, 19.0],
+                &[21.0, 20.0],
+                &[f64::NAN, 20.0],
+            ],
+        );
+    }
+    f.source.set(graph(
+        "boiler",
+        &f.dir.path().join("boiler"),
+        indoc! {r##"
+            files: zones/*/temperature.rrd
+            label: "zone {1}"
+            scale: 2
+            y-axis: {min: 0, interval: 1, minor-interval: 0.5}
+            series:
+              - {ds: sel, label: selected, color: red, dash: dotted, width: 3}
+              - {ds: current, label: current, color: "#000", fill: 0.2}
+              - label: chauffe
+                band: {lower: current, upper: sel, pattern: hatch, opacity: 0.5}
+                color: red
+              - label: heating
+                diff: [sel, current]
+                floor: 0
+              - label: missing
+                diff: [sel, nope]
+        "##},
+    ));
+    let (status, g) = get(
+        &f,
+        &format!(
+            "/api/graph?id=boiler&start={T0}&end={}&points=10",
+            T0 + 4 * STEP
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{g}");
+    assert_eq!(
+        g["y_axis"],
+        serde_json::json!({"min": 0.0, "interval": 1.0, "minor_interval": 0.5})
+    );
+    assert_eq!(
+        g["series"],
+        serde_json::json!([
+            {"label": "zone 1 selected", "avg": [40.0, 38.0, 40.0, 40.0],
+             "color": "red", "dash": "dotted", "width": 3.0},
+            {"label": "zone 1 current", "avg": [36.0, 38.0, 42.0, null],
+             "color": "#000", "fill": 0.2},
+            {"label": "zone 1 chauffe", "avg": [40.0, 38.0, null, null],
+             "min": [36.0, 38.0, null, null], "max": [40.0, 38.0, null, null],
+             "color": "red", "band": {"pattern": "hatch", "opacity": 0.5}, "line": false},
+            {"label": "zone 1 heating", "avg": [4.0, 0.0, 0.0, null]},
+        ])
+    );
+    assert_eq!(
+        g["notes"],
+        serde_json::json!(["zones/1/temperature.rrd: no data source `nope`"])
+    );
+}
+
+#[tokio::test]
 async fn bad_requests_are_rejected_with_a_reason() {
     let f = fixture();
     let (s, e) = get(&f, "/api/graph?id=nope&start=0&end=10").await;

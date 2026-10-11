@@ -7,5 +7,8 @@ pub mod pattern;
 pub mod source;
 pub mod watch;
 
-pub use config::{Graph, GraphFields, GraphType, SeriesDef};
+pub use config::{
+    BandDef, BandPattern, BandStyle, Dash, Graph, GraphFields, GraphType, Series, SeriesDef,
+    SeriesKind, SeriesStyle, YAxis,
+};
 pub use source::{GraphSource, Lookup};

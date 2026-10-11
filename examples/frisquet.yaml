@@ -1,0 +1,27 @@
+# Frisquet boiler temperatures: one graph's keys (see README.org,
+# "Graph YAML keys").  The host supplies the title ("Températures") and
+# the RRD directory; in a tree-based host, put these keys in a node:
+#
+#   rrd-dir: frisquet-rrd        # relative to the config file
+#   children:
+#     - title: Températures
+#       files: zones/*/temperature.rrd
+#       ...
+files: zones/*/temperature.rrd
+label: "{1}"
+unit: "°C"
+y-axis: {interval: 1, minor-interval: 0.5}
+series:
+  - {ds: conf, label: confort, color: "#ffff00", fill: 0.1}
+  - {ds: red, label: réduit, color: "#0000ff", fill: 0.1}
+  - {ds: hg, label: hors-gel, color: "#000000", fill: 0.2}
+  - {ds: target, label: target, color: orange, dash: dashed, width: 1}
+  - {ds: sel, label: selected, color: red, dash: dotted, width: 3}
+  - {ds: current, label: current, color: black, width: 3}
+  - label: chauffe
+    band: {lower: current, upper: sel, pattern: hatch}
+    color: red
+  - label: heating
+    diff: [sel, current]
+    floor: 0
+    color: red

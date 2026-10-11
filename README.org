@@ -90,12 +90,73 @@ use relative URLs and a configurable API base.
 | ~scale~        | ~1~                  | Multiply every value (e.g. ~1024~ for sizes stored in KiB)                                |
 | ~valid-max~    | none                 | Treat stored values above it as unknown (e.g. counter resets read as wraps)               |
 | ~hold~         | none                 | Repeat the last known value over unknown points up to this long (~90~, ~30m~, ~2h~, ~1d~) |
+| ~y-axis~       | automatic            | ~{min, max, interval, minor-interval}~; see [[*Y axis][Y axis]]                                     |
 
 Set exactly one of ~ds~ and ~series~. When there are several files and
 several series, each series is named ~<file label> <series label>~.
 ~hold~ accepts positive seconds or ~s/m/h/d/w/y~ durations; a year is
 365 days. Unknown keys, empty series, invalid captures, zero ~top~,
 nonfinite/zero scale and nonfinite valid-max are rejected strictly.
+
+The graph's title and its RRD directory belong to the host (for example a tree
+node's ~title~ and ~rrd-dir~), not to these keys.
+
+** Series entries
+
+Each ~series~ entry sets exactly one of ~ds~, ~band~ and ~diff~ (what it
+reads from every matched file); the other keys only change how it is
+drawn. Series are drawn in list order, later ones on top.
+
+| Key      | Applies to   | Description                                                                                       |
+|----------+--------------+---------------------------------------------------------------------------------------------------|
+| ~ds~     |              | Data source drawn as a line                                                                       |
+| ~band~   |              | ~{lower, upper, pattern, opacity}~: area between two data sources, no line, not in the tooltip    |
+| ~diff~   |              | ~[a, b]~: line of ~a - b~                                                                         |
+| ~label~  | all          | Series name; defaults to ~ds~, *required* for ~band~ and ~diff~                                   |
+| ~floor~  | ~diff~       | Clamp ~a - b~ below at this value (e.g. ~0~ for ~max(a - b, 0)~)                                  |
+| ~color~  | all          | ~#rgb~, ~#rgba~, ~#rrggbb~, ~#rrggbbaa~ or a CSS color name (~red~, ~orange~); default: generated |
+| ~dash~   | ~ds~, ~diff~ | ~solid~ (default), ~dashed~ or ~dotted~                                                           |
+| ~width~  | ~ds~, ~diff~ | Line width in pixels, finite and above 0 (default 1)                                              |
+| ~fill~   | ~ds~, ~diff~ | Opacity in (0, 1] of the area filled from the line down to the bottom of the y axis               |
+
+~band.pattern~ is ~solid~ (default) or ~hatch~ (diagonal lines in the
+series color); ~band.opacity~ is in (0, 1] (frontend default 0.18).
+A band exists at a point only where both bounds are known and
+~lower <= upper~. A ~diff~ point is unknown when either input is.
+~lower~, ~upper~ and ~diff~ name data sources of each matched file; they
+are read even when not drawn as their own series. A file lacking one of
+them gets a per-graph note (~<file>: no data source `x`~) and the series
+is left out for that file, exactly like a missing ~ds~.
+
+Interactions, all checked when the configuration loads:
+
+- ~scale~, ~valid-max~ and ~hold~ apply to the inputs before the band or
+  difference is computed, so ~floor~ is in scaled units.
+- ~fill~, ~band~ and ~diff~ cannot be combined with ~type: stacked~ or
+  ~stack-toggle: true~.
+- ~band~ and ~diff~ cannot be combined with ~top~ (summing them into
+  ~other~ is meaningless); drawing keys of ~ds~ series can.
+- With ~min-max~, ~ds~ series keep their MIN/MAX band; ~diff~ series have
+  none, and a ~band~ series' bounds are its two inputs.
+- A ~band~ series takes no ~dash~, ~width~ or ~fill~; ~floor~ is only
+  valid on ~diff~.
+
+** Y axis
+
+~y-axis~ sets ~min~ and ~max~ (finite, ~min < max~), the major tick
+step ~interval~ (finite, above 0) and the minor tick step
+~minor-interval~, which requires ~interval~ and must divide it into an
+integer count of at least 2 (~interval: 1, minor-interval: 0.5~). Unset
+keys keep the frontend's automatic axis.
+
+** Example
+
+[[file:examples/frisquet.yaml][examples/frisquet.yaml]] reproduces a boiler temperature chart:
+yellow/blue/black comfort, reduced and frost-protection set points as
+filled areas, the target dashed, the selected set point dotted, the
+current temperature thick, a red hatched band where the current
+temperature is below the selected one, and the heating demand
+~max(selected - current, 0)~.
 
 * API contract
 
@@ -109,6 +170,16 @@ The JSON has ~id~, ~title~, ~unit~, ~type~, ~start~, ~step~, ~len~,
 ~series~ (~label~, ~avg~, optional ~min~/~max~), ~last_update~ and
 ~notes~. Unknown values are ~null~; missing files or data sources are
 notes. Point ~i~ summarises the interval ending at ~start + i * step~.
+
+Drawing keys add optional fields, omitted when unset, so a graph that
+uses none of them serves exactly the JSON above:
+
+- per series: ~color~, ~dash~, ~width~, ~fill~ as configured;
+- a ~band~ series: ~min~ / ~max~ are its lower / upper bounds, ~avg~
+  repeats the upper bound where the band exists (~null~ elsewhere), plus
+  ~band: {pattern, opacity?}~ and ~line: false~;
+- a ~diff~ series: ~avg~ is the difference, without ~min~ / ~max~;
+- per graph: ~y_axis: {min?, max?, interval?, minor_interval?}~.
 
 ~api/watch?id=...&id=...[&sub=<uuid>]~ registers sorted, deduplicated
 graph interests and returns ~{ids}~, ~x-sub-id~, ~x-snapshot-index~.

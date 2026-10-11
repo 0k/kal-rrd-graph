@@ -10,14 +10,14 @@
 //! file each add a human-readable note to the result and the rest of
 //! the graph is still drawn.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
 use rrd::ConsolidationFn;
 use serde::Serialize;
 
-use crate::config::{label_tokens, Graph, GraphType, LabelToken, SeriesDef};
+use crate::config::{label_tokens, Graph, GraphType, LabelToken, SeriesKind, SeriesStyle, YAxis};
 
 /// Time window requested by the frontend (UNIX seconds, `end` > `start`).
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +61,9 @@ pub struct SeriesData {
     pub min: Option<Vec<Option<f64>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<Vec<Option<f64>>>,
+    /// Drawing keys from the YAML; absent from JSON when unset.
+    #[serde(flatten)]
+    pub style: SeriesStyle,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,6 +83,9 @@ pub struct GraphData {
     pub last_update: Option<i64>,
     /// Why some (or all) of the expected data is missing.
     pub notes: Vec<String>,
+    /// The graph's `y-axis`, omitted when not configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y_axis: Option<YAxis>,
 }
 
 /// One series read from one file, before alignment on the common grid.
@@ -117,6 +123,14 @@ pub fn build(graph: &Graph, window: Window, keep: Option<&BTreeSet<String>>) -> 
 
     let resolution = window.resolution;
     let read_window = window.lookback(graph.hold);
+    // Every data source any series reads, once, in first-use order.
+    let mut needed: Vec<&str> = Vec::new();
+    for ds in graph.series.iter().flat_map(|s| s.kind.inputs()) {
+        if !needed.contains(&ds) {
+            needed.push(ds);
+        }
+    }
+    let mut files = Vec::new();
     for m in &matches {
         let rel = m
             .path
@@ -128,24 +142,32 @@ pub fn build(graph: &Graph, window: Window, keep: Option<&BTreeSet<String>>) -> 
             last_update = Some(last_update.map_or(t, |l: i64| l.max(t)));
         }
         let file_label = file_label(graph.label.as_deref(), &m.captures);
-        match read_file(
-            &m.path,
-            &graph.series,
-            graph.min_max,
-            read_window,
-            resolution,
-        ) {
+        match read_file(&m.path, &needed, graph.min_max, read_window, resolution) {
             Ok(per_ds) => {
-                for (def, read) in graph.series.iter().zip(per_ds) {
-                    match read {
-                        Some((step, samples)) => raws.push(RawSeries {
-                            label: series_label(&file_label, def, graph.series.len()),
+                // Data source -> index of its aligned column in `raws`.
+                let mut columns = BTreeMap::new();
+                for (ds, read) in needed.iter().zip(per_ds) {
+                    if let Some((step, samples)) = read {
+                        columns.insert(*ds, raws.len());
+                        raws.push(RawSeries {
+                            label: ds.to_string(),
                             step,
                             samples,
-                        }),
-                        None => notes.push(format!("{rel}: no data source `{}`", def.ds)),
+                        });
                     }
                 }
+                let mut noted = BTreeSet::new();
+                for def in &graph.series {
+                    let own = matches!(def.kind, SeriesKind::Ds(_));
+                    for ds in def.kind.inputs() {
+                        // A `ds` series reports its own absence, as it
+                        // always has; derived series only add new names.
+                        if !columns.contains_key(ds) && (noted.insert(ds) || own) {
+                            notes.push(format!("{rel}: no data source `{ds}`"));
+                        }
+                    }
+                }
+                files.push((file_label, columns));
             }
             Err(e) => notes.push(format!("{rel}: {e}")),
         }
@@ -158,10 +180,50 @@ pub fn build(graph: &Graph, window: Window, keep: Option<&BTreeSet<String>>) -> 
         hold: graph.hold,
     };
     let aligned = align(&raws, window, resolution, &cleanup);
+    let mut drawn = Vec::new();
+    for (file_label, columns) in &files {
+        for def in &graph.series {
+            let Some(inputs) = def
+                .kind
+                .inputs()
+                .iter()
+                .map(|ds| columns.get(ds).map(|&i| &aligned.series[i]))
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            let label = series_label(file_label, def.own_label(), graph.series.len());
+            let style = def.style.clone();
+            drawn.push(match &def.kind {
+                SeriesKind::Ds(_) => SeriesData {
+                    label,
+                    style,
+                    ..inputs[0].clone()
+                },
+                SeriesKind::Band { .. } => {
+                    let (avg, min, max) = band_values(&inputs[0].avg, &inputs[1].avg);
+                    SeriesData {
+                        label,
+                        avg,
+                        min: Some(min),
+                        max: Some(max),
+                        style,
+                    }
+                }
+                SeriesKind::Diff { floor, .. } => SeriesData {
+                    label,
+                    avg: diff_values(&inputs[0].avg, &inputs[1].avg, *floor),
+                    min: None,
+                    max: None,
+                    style,
+                },
+            });
+        }
+    }
     let series = match (graph.top, keep) {
-        (Some(_), Some(keep)) => keep_labels(aligned.series, keep),
-        (Some(n), None) => keep_top(aligned.series, n),
-        (None, _) => aligned.series,
+        (Some(_), Some(keep)) => keep_labels(drawn, keep),
+        (Some(n), None) => keep_top(drawn, n),
+        (None, _) => drawn,
     };
     GraphData {
         id: graph.id.clone(),
@@ -174,7 +236,39 @@ pub fn build(graph: &Graph, window: Window, keep: Option<&BTreeSet<String>>) -> 
         series,
         last_update,
         notes,
+        y_axis: graph.y_axis,
     }
+}
+
+/// `(avg, min, max)` of a band: the area `lower..upper` at points where
+/// both are known and `lower <= upper`, unknown elsewhere.  `avg` is the
+/// upper bound so the frontend draws the band (it skips unknown averages)
+/// while the series itself has no line.
+pub fn band_values(lower: &[Option<f64>], upper: &[Option<f64>]) -> BandValues {
+    let points: Vec<_> = lower
+        .iter()
+        .zip(upper)
+        .map(|pair| match pair {
+            (Some(lo), Some(hi)) if lo <= hi => Some((*lo, *hi)),
+            _ => None,
+        })
+        .collect();
+    let hi: Vec<_> = points.iter().map(|p| p.map(|(_, hi)| hi)).collect();
+    let lo = points.iter().map(|p| p.map(|(lo, _)| lo)).collect();
+    (hi.clone(), lo, hi)
+}
+
+pub type BandValues = (Vec<Option<f64>>, Vec<Option<f64>>, Vec<Option<f64>>);
+
+/// `a - b` where both are known, clamped below at `floor`.
+pub fn diff_values(a: &[Option<f64>], b: &[Option<f64>], floor: Option<f64>) -> Vec<Option<f64>> {
+    a.iter()
+        .zip(b)
+        .map(|pair| match pair {
+            (Some(a), Some(b)) => Some(floor.map_or(a - b, |f| (a - b).max(f))),
+            _ => None,
+        })
+        .collect()
 }
 
 fn last_update_of(path: &Path) -> Option<i64> {
@@ -188,10 +282,10 @@ fn last_update_of(path: &Path) -> Option<i64> {
 type DsSamples = Option<(i64, Vec<(i64, f64, f64, f64)>)>;
 
 /// Fetch every requested data source of one file.  Returns, per
-/// `defs` entry, `None` when the file has no such data source.
+/// `names` entry, `None` when the file has no such data source.
 fn read_file(
     path: &Path,
-    defs: &[SeriesDef],
+    names: &[&str],
     min_max: bool,
     window: Window,
     resolution: i64,
@@ -205,10 +299,10 @@ fn read_file(
     } else {
         (None, None)
     };
-    Ok(defs
+    Ok(names
         .iter()
-        .map(|def| {
-            let col = avg.names.iter().position(|n| *n == def.ds)?;
+        .map(|name| {
+            let col = avg.names.iter().position(|n| n == name)?;
             let other = |f: &Option<Fetched>, i: usize| -> f64 {
                 f.as_ref()
                     .and_then(|f| f.rows.get(i).map(|r| r.1[col]))
@@ -279,10 +373,9 @@ fn file_label(template: Option<&str>, captures: &[String]) -> String {
     }
 }
 
-fn series_label(file_label: &str, def: &SeriesDef, defs: usize) -> String {
-    let own = def.label.clone().unwrap_or_else(|| def.ds.clone());
+fn series_label(file_label: &str, own: &str, defs: usize) -> String {
     if file_label.is_empty() {
-        own
+        own.to_string()
     } else if defs == 1 {
         file_label.to_string()
     } else {
@@ -372,6 +465,7 @@ pub fn align(raws: &[RawSeries], window: Window, resolution: i64, cleanup: &Clea
                 avg: fill(avg),
                 min: min_max.then(|| fill(finite(min))),
                 max: min_max.then(|| fill(finite(max))),
+                style: SeriesStyle::default(),
             }
         })
         .collect();
@@ -448,6 +542,7 @@ fn append_other(mut series: Vec<SeriesData>, rest: Vec<SeriesData>) -> Vec<Serie
         avg: other,
         min: None,
         max: None,
+        style: SeriesStyle::default(),
     });
     series
 }
@@ -502,6 +597,39 @@ mod tests {
             &full.series[0].max.as_ref().unwrap()[2..]
         );
         assert_eq!(tail.series[0].avg[0], Some(5.0));
+    }
+
+    #[test]
+    fn band_keeps_points_where_both_bounds_are_known_and_ordered() {
+        let lower = [Some(1.0), Some(2.0), Some(3.0), None, Some(1.0)];
+        let upper = [Some(2.0), Some(2.0), Some(2.5), Some(1.0), None];
+        let known = vec![Some(2.0), Some(2.0), None, None, None];
+        assert_eq!(
+            band_values(&lower, &upper),
+            (
+                known.clone(),
+                vec![Some(1.0), Some(2.0), None, None, None],
+                known
+            )
+        );
+    }
+
+    #[test]
+    fn diff_subtracts_known_points_and_clamps_at_floor() {
+        let a = [Some(5.0), Some(1.0), None, Some(2.0)];
+        let b = [Some(2.0), Some(3.0), Some(1.0), None];
+        assert_eq!(
+            diff_values(&a, &b, None),
+            vec![Some(3.0), Some(-2.0), None, None]
+        );
+        assert_eq!(
+            diff_values(&a, &b, Some(0.0)),
+            vec![Some(3.0), Some(0.0), None, None]
+        );
+        assert_eq!(
+            diff_values(&a, &b, Some(-1.0)),
+            vec![Some(3.0), Some(-1.0), None, None]
+        );
     }
 
     #[test]
@@ -614,6 +742,7 @@ mod tests {
             avg: v,
             min: None,
             max: None,
+            style: SeriesStyle::default(),
         };
         let out = keep_top(
             vec![
@@ -634,13 +763,9 @@ mod tests {
         let caps = vec!["myc".to_string(), "odoo".to_string()];
         assert_eq!(file_label(None, &caps), "myc/odoo");
         assert_eq!(file_label(Some("{2} ({1})"), &caps), "odoo (myc)");
-        let def = SeriesDef {
-            ds: "load_avg_1".into(),
-            label: Some("1 min".into()),
-        };
-        assert_eq!(series_label("", &def, 3), "1 min");
-        assert_eq!(series_label("web", &def, 3), "web 1 min");
-        assert_eq!(series_label("web", &def, 1), "web");
+        assert_eq!(series_label("", "1 min", 3), "1 min");
+        assert_eq!(series_label("web", "1 min", 3), "web 1 min");
+        assert_eq!(series_label("web", "1 min", 1), "web");
     }
 
     #[test]
@@ -650,6 +775,7 @@ mod tests {
             avg,
             min: None,
             max: None,
+            style: SeriesStyle::default(),
         };
         let series = vec![
             s("alpha beta", vec![Some(1.0), None]),
