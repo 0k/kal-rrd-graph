@@ -16,12 +16,22 @@ use regex::Regex;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PatternError {
+    /// The pattern has no characters.
     #[error("pattern is empty")]
     Empty,
+    /// The pattern starts with `/` instead of being relative to `rrd-dir`.
     #[error("{pattern:?} must be relative to `rrd-dir` (no leading `/`)")]
-    Absolute { pattern: String },
+    Absolute {
+        /// Original rejected pattern.
+        pattern: String,
+    },
+    /// A slash-separated component is empty, `.` or `..`.
     #[error("{pattern:?} has an empty, `.` or `..` path component")]
-    InvalidComponent { pattern: String },
+    InvalidComponent {
+        /// Original rejected pattern.
+        pattern: String,
+    },
+    /// The escaped wildcard matcher exceeds regex compilation limits.
     #[error(transparent)]
     Regex(#[from] regex::Error),
 }
@@ -56,6 +66,11 @@ pub(crate) enum PatternMatch {
     None,
 }
 
+/// Validated relative file pattern with numbered `*` captures.
+///
+/// Each wildcard stays within one path component and does not match a hidden
+/// entry. Absolute paths, empty components and traversal components are rejected.
+/// Parsing does not inspect the filesystem; [`crate::graph::build`] expands it.
 #[derive(Debug, Clone)]
 pub struct FilePattern {
     source: String,
@@ -71,6 +86,13 @@ pub(crate) struct FileMatch {
 }
 
 impl FilePattern {
+    /// Parse a relative slash-separated pattern, treating each `*` as a capture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PatternError::Empty`], [`PatternError::Absolute`] or
+    /// [`PatternError::InvalidComponent`] for invalid paths, or
+    /// [`PatternError::Regex`] if the wildcard matcher cannot be compiled.
     pub fn parse(source: &str) -> Result<FilePattern, PatternError> {
         if source.is_empty() {
             return Err(PatternError::Empty);
@@ -109,6 +131,7 @@ impl FilePattern {
         })
     }
 
+    /// Original pattern text, unchanged by parsing.
     pub fn as_str(&self) -> &str {
         &self.source
     }

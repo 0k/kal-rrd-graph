@@ -31,20 +31,34 @@ const TICK: Duration = Duration::from_secs(1);
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum WatchError {
+    /// At least one worker timing duration is zero.
     #[error("graph watch timing must be nonzero")]
     NonzeroTiming,
+    /// The platform file-notification backend could not be initialized.
     #[error("failed to initialize graph file watcher (inotify): {0}")]
     Initialize(#[source] notify::Error),
+    /// The operating system could not start the watch worker thread.
     #[error("failed to spawn graph watch worker: {0}")]
     Spawn(#[source] std::io::Error),
+    /// A proposed subscription id is not a hyphenated UUID-shaped string.
     #[error("invalid subscription id")]
     InvalidSubscription,
+    /// A requested id names a host navigation item instead of a graph.
     #[error("{id:?} is a group, not a graph")]
-    NotAGraph { id: String },
+    NotAGraph {
+        /// Rejected host-assigned id.
+        id: String,
+    },
+    /// A requested id is unknown to the host.
     #[error("no graph {id:?}")]
-    NotFound { id: String },
+    NotFound {
+        /// Unknown host-assigned id.
+        id: String,
+    },
+    /// A rescan request could not reach the worker; contains the channel error text.
     #[error("graph watch worker stopped: {0}")]
     WorkerStopped(String),
+    /// The worker did not acknowledge the subscription rescan.
     #[error("graph watch rescan failed: {0}")]
     Rescan(#[source] mpsc::RecvError),
 }
@@ -52,20 +66,27 @@ pub enum WatchError {
 /// The graph whose files changed; clients fetch that graph's tail.
 #[derive(Debug, Serialize, Clone)]
 pub struct GraphChange {
+    /// Opaque host-assigned id of the graph to refetch.
     pub id: String,
 }
 
 /// Snapshot of one client's displayed graph ids, sorted and deduplicated.
 #[derive(Debug, Serialize, Clone)]
 pub struct WatchSnapshot {
+    /// Displayed graph ids in sorted, deduplicated order.
     pub ids: Vec<String>,
 }
 
 /// Worker timing, injectable so lifecycle and debounce tests need no long waits.
 #[derive(Debug, Clone, Copy)]
 pub struct WatchTiming {
+    /// Quiet period after the last write before emitting a change (default 1 s).
     pub settle: Duration,
+    /// Interest retention after last stream disconnect, or registration without
+    /// a stream (default 30 s).
     pub grace: Duration,
+    /// Interval for revision checks, idle interest expiry and log compaction
+    /// (default 1 s).
     pub tick: Duration,
 }
 
@@ -92,6 +113,13 @@ enum Message {
 }
 
 /// Single owner of the union of displayed graphs and its file-change log.
+///
+/// One worker thread owns directory watches, filters read-only notifications,
+/// debounces writes, and retargets watches when the source revision changes.
+/// The optional HTTP adapter retains interests for successful SSE bodies;
+/// disconnected or never-attached interests expire after [`WatchTiming::grace`].
+/// Standalone callers can refresh interests with [`GraphWatch::subscribe`].
+/// Dropping the final `Arc` stops and joins the worker and drops its watches.
 pub struct GraphWatch {
     live: Arc<dyn GraphSource>,
     interests: Arc<Mutex<HashMap<SubId, Interest>>>,
@@ -109,12 +137,27 @@ impl std::fmt::Debug for GraphWatch {
 }
 
 impl GraphWatch {
-    /// Initialize the notify backend before serving either run mode.
+    /// Initialize the file-notification backend and worker with default timing.
+    ///
+    /// Does not read RRD values or own host configuration reloads. No files are
+    /// watched until an interest is registered with [`Self::subscribe`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WatchError::Initialize`] if the platform backend fails or
+    /// [`WatchError::Spawn`] if the worker thread cannot be started.
     pub fn new(live: Arc<dyn GraphSource>) -> Result<Arc<Self>, WatchError> {
         Self::with_timing(live, WatchTiming::default())
     }
 
-    /// As `new`, with bounded, nonzero worker timing for integration tests.
+    /// Initialize the backend and worker with explicit, nonzero timing.
+    ///
+    /// Timing controls debounce, interest expiry and maintenance polling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WatchError::NonzeroTiming`] for any zero duration, or the
+    /// backend/thread initialization failures described by [`Self::new`].
     pub fn with_timing(
         live: Arc<dyn GraphSource>,
         timing: WatchTiming,
@@ -165,6 +208,23 @@ impl GraphWatch {
     }
 
     /// Register or replace one interest after validating the current config.
+    ///
+    /// `None` mints a subscription id; a valid proposed id replaces its prior
+    /// interest and resets the event-log snapshot position. Graph ids are
+    /// sorted and deduplicated. An empty list clears the interest's graph ids.
+    /// The returned tuple is `(snapshot, subscription_id, snapshot_index)`.
+    ///
+    /// This method blocks until the worker has rescanned the directory plan.
+    /// Individual directory watch failures are logged, not returned. Async
+    /// callers should use a blocking worker, as the HTTP adapter does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WatchError::InvalidSubscription`] for an invalid proposed id,
+    /// [`WatchError::NotAGraph`] or [`WatchError::NotFound`] for rejected graph
+    /// ids, or [`WatchError::WorkerStopped`]/[`WatchError::Rescan`] if worker
+    /// communication fails. Input validation precedes registration; worker
+    /// communication errors can occur after the interest has been registered.
     pub fn subscribe(
         &self,
         sub: Option<String>,

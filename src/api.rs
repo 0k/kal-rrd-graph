@@ -5,6 +5,18 @@
 //! * `GET api/watch?id=…&id=…[&sub=…]` — declare displayed graphs;
 //!   returns `{"ids":[…]}`, `x-sub-id` and `x-snapshot-index`.
 //! * `GET api/watch/events?sub=…` — indexed `{"id":"graph-id"}` changes.
+//!
+//! Graph requests accept `points` (default 800, range 10..=5000) or a positive
+//! `step`, never both. Repeated `keep=<label>` values retain a `top` graph's
+//! full-window selections for a tail fetch. Invalid windows, numeric limits
+//! and non-graph ids produce HTTP 400; unknown graph ids produce HTTP 404.
+//! Application-generated graph/watch errors use `{"error":"message"}`.
+//!
+//! Successful watch snapshots register interests before returning. Their
+//! subscription id must be supplied to the event endpoint. Unknown/expired
+//! subscriptions require a fresh snapshot (HTTP 409 `needs_snapshot`). SSE
+//! replay, indexing and retention belong to `kal-sse`; this adapter retains
+//! graph interests for each successful response body's lifetime.
 
 use std::collections::BTreeSet;
 use std::pin::Pin;
@@ -24,14 +36,20 @@ use crate::graph::{self, Window};
 use crate::source::{GraphSource, Lookup};
 use crate::watch::{valid_sub, GraphWatch, StreamGuard, WatchError};
 
-/// Bounds on `points`, so a request cannot ask for a useless or huge
-/// response.
+/// Minimum accepted `points` value in a graph request.
 pub const MIN_POINTS: usize = 10;
+/// Maximum accepted `points` value and explicit-step point-count limit.
 pub const MAX_POINTS: usize = 5000;
 
+/// Shared host source and watcher for graph and watch HTTP endpoints.
+///
+/// Construct both fields from the same source so graph responses and file
+/// interests resolve the same definitions. Cloning shares their `Arc`s.
 #[derive(Clone)]
 pub struct ApiState {
+    /// Host-owned graph definitions and lookup outcomes.
     pub source: Arc<dyn GraphSource>,
+    /// Shared watcher and event log initialized against `source`.
     pub watch: Arc<GraphWatch>,
 }
 
@@ -43,6 +61,12 @@ impl std::fmt::Debug for ApiState {
     }
 }
 
+/// Build the `/api/graph`, `/api/watch` and `/api/watch/events` axum routes.
+///
+/// The host merges or nests this router and serves it in a Tokio runtime.
+/// This crate provides no navigation tree, configuration endpoint or server
+/// listener. Blocking graph reads and subscription rescans are dispatched
+/// through Tokio's blocking pool by the handlers.
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/api/graph", get(graph_data))

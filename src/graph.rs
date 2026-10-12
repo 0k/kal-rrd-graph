@@ -22,14 +22,20 @@ use crate::config::{label_tokens, Graph, GraphType, LabelToken, SeriesKind, Seri
 /// Time window requested by the frontend (UNIX seconds, `end` > `start`).
 #[derive(Debug, Clone, Copy)]
 pub struct Window {
+    /// Requested lower bound in UNIX seconds; intervals end after this bound.
     pub start: i64,
+    /// Requested upper bound in UNIX seconds; must be greater than `start`.
     pub end: i64,
     /// Requested seconds per point (at least 1).
     pub resolution: i64,
 }
 
 impl Window {
-    /// Seconds per point the caller asked for (at least 1).
+    /// Choose a resolution by rounding `(end - start) / points` upward.
+    ///
+    /// Both the point count and resolution are clamped to at least one.
+    /// The returned window keeps the input bounds; [`build`] handles invalid
+    /// or unrepresentable bounds with a note rather than panicking.
     pub fn from_points(start: i64, end: i64, points: usize) -> Self {
         let span = end.saturating_sub(start).max(1);
         let points = i64::try_from(points.max(1)).unwrap_or(i64::MAX);
@@ -37,6 +43,10 @@ impl Window {
     }
 
     /// Preserve a previous response's lattice when fetching a tail.
+    ///
+    /// Clamps `step` to at least one. [`build`] may choose a coarser grid if
+    /// the files' AVERAGE archives have a coarser resolution. Use the previous
+    /// [`GraphData::step`] when requesting a tail of the same graph.
     pub fn from_step(start: i64, end: i64, step: i64) -> Self {
         Self {
             start,
@@ -71,12 +81,20 @@ fn grid(window: Window, step: i64, hold: Option<i64>) -> Option<(i64, i64, usize
     Some((original_g0.checked_add(step)?, g0, len, trim))
 }
 
+/// One drawn series on the graph's common time grid.
+///
+/// Unknown values are `None` (JSON `null`). Bounds are absent for ordinary
+/// lines unless `min-max` was requested, and always absent for differences.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SeriesData {
+    /// Final display label, combining the per-file and own series labels.
     pub label: String,
+    /// Average or derived value at each point; bands repeat their upper bound.
     pub avg: Vec<Option<f64>>,
+    /// Optional lower bounds: MIN archive values or a derived band's lower input.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min: Option<Vec<Option<f64>>>,
+    /// Optional upper bounds: MAX archive values or a derived band's upper input.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<Vec<Option<f64>>>,
     /// Drawing keys from the YAML; absent from JSON when unset.
@@ -84,18 +102,29 @@ pub struct SeriesData {
     pub style: SeriesStyle,
 }
 
+/// Fetched graph metadata, aligned series and nonfatal data diagnostics.
+///
+/// Produced by [`build`] and serialized by the optional HTTP adapter. Every
+/// returned series shares the grid described by `start`, `step` and `len`.
 #[derive(Debug, Clone, Serialize)]
 pub struct GraphData {
+    /// Opaque host-assigned graph id.
     pub id: String,
+    /// Host-assigned display title.
     pub title: String,
+    /// Display unit from the graph definition, or `None` when unspecified.
     pub unit: Option<String>,
+    /// Initial drawing layout, serialized under the JSON key `type`.
     #[serde(rename = "type")]
     pub graph_type: GraphType,
     /// Time of the first point; point `i` is at `start + i * step`.
     /// Each point summarises the `step` seconds that END at its time.
     pub start: i64,
+    /// Seconds per point on the common grid, at least one.
     pub step: i64,
+    /// Number of points in every returned series array.
     pub len: usize,
+    /// Drawn series in configured order, or ranked order when using `top`.
     pub series: Vec<SeriesData>,
     /// Most recent update time over the graph's files.
     pub last_update: Option<i64>,
@@ -116,6 +145,21 @@ struct RawSeries {
 }
 
 /// Read and assemble `graph` over `window`.
+///
+/// This performs blocking filesystem and librrd reads. Async hosts should run
+/// it on a blocking worker. The grid step is the coarsest requested/AVERAGE
+/// file resolution; points summarize intervals ending on multiples of that
+/// step. MIN/MAX archive rows cover each average timestamp using their own
+/// intervals, without changing the AVERAGE resolution.
+///
+/// Applies value cleanup, scaling and hold before computing derived series.
+/// For a `top` graph, `keep` preserves a full window's selected labels while
+/// fetching a tail; otherwise the highest-mean series are selected. Remaining
+/// series are summed into `other (k)`. `keep` is ignored without `top`.
+///
+/// Missing/unreadable files, missing data sources and unavailable band archives
+/// add [`GraphData::notes`] instead of failing the whole graph. Invalid or
+/// unrepresentable windows return an empty result with an explanatory note.
 pub fn build(graph: &Graph, window: Window, keep: Option<&BTreeSet<String>>) -> GraphData {
     let mut notes = Vec::new();
     let mut raws = Vec::new();

@@ -6,16 +6,28 @@ use serde::Deserialize;
 
 use crate::pattern::FilePattern;
 
+/// YAML decoding or graph validation failure.
+///
+/// This enum may grow; downstream matches must include a wildcard arm.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ConfigError {
+    /// The YAML cannot be decoded, including unknown keys or wrong value types.
     #[error("invalid YAML in {path}: {source}")]
     Yaml {
+        /// Diagnostic file path; empty for [`GraphFields::parse`].
         path: PathBuf,
+        /// YAML parser's underlying diagnostic.
         source: serde_yaml::Error,
     },
+    /// Decoded graph keys fail semantic validation.
     #[error("{at}: {message}")]
-    Invalid { at: String, message: String },
+    Invalid {
+        /// Host-supplied diagnostic path, such as `Root > Boiler`.
+        at: String,
+        /// Reason the graph definition was rejected.
+        message: String,
+    },
 }
 
 /// How the series of a graph are drawn.
@@ -23,8 +35,10 @@ pub enum ConfigError {
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum GraphType {
+    /// Draw independent lines; the default graph type.
     #[default]
     Line,
+    /// Stack series values on a common time grid.
     Stacked,
 }
 
@@ -33,8 +47,11 @@ pub enum GraphType {
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum Dash {
+    /// Continuous line.
     Solid,
+    /// Repeated dash segments.
     Dashed,
+    /// Repeated dots.
     Dotted,
 }
 
@@ -43,8 +60,10 @@ pub enum Dash {
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum BandPattern {
+    /// Solid area; the default band pattern.
     #[default]
     Solid,
+    /// Diagonal hatching in the series color.
     Hatch,
 }
 
@@ -52,9 +71,13 @@ pub enum BandPattern {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct BandDef {
+    /// Data source providing the lower bound.
     pub lower: String,
+    /// Data source providing the upper bound.
     pub upper: String,
+    /// Area pattern, defaulting to [`BandPattern::Solid`] during validation.
     pub pattern: Option<BandPattern>,
+    /// Explicit opacity in `(0, 1]`; `None` leaves the frontend default.
     pub opacity: Option<f64>,
 }
 
@@ -64,14 +87,23 @@ pub struct BandDef {
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct SeriesDef {
+    /// One data source; mutually exclusive with `band` and `diff`.
     pub ds: Option<String>,
+    /// Own series label; required for `band`/`diff`, otherwise defaults to `ds`.
     pub label: Option<String>,
+    /// CSS color name or `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`.
     pub color: Option<String>,
+    /// Line dash style; unset leaves the frontend default.
     pub dash: Option<Dash>,
+    /// Positive finite line width in pixels.
     pub width: Option<f64>,
+    /// Fill opacity in `(0, 1]` below a line; not valid on stacked graphs.
     pub fill: Option<f64>,
+    /// Area between two data sources; mutually exclusive with `ds` and `diff`.
     pub band: Option<BandDef>,
+    /// Exactly two data sources, in minuend/subtrahend order.
     pub diff: Option<Vec<String>>,
+    /// Finite lower clamp for `diff`, in scaled units; invalid for other kinds.
     pub floor: Option<f64>,
 }
 
@@ -82,11 +114,19 @@ pub enum SeriesKind {
     /// One data source.
     Ds(String),
     /// `lower..upper` where both are known and `lower <= upper`.
-    Band { lower: String, upper: String },
+    Band {
+        /// Data source providing the lower bound.
+        lower: String,
+        /// Data source providing the upper bound.
+        upper: String,
+    },
     /// `minuend - subtrahend`, clamped below at `floor`.
     Diff {
+        /// Data source from which the subtrahend is subtracted.
         minuend: String,
+        /// Data source subtracted from the minuend.
         subtrahend: String,
+        /// Optional lower clamp applied after scaling and subtraction.
         floor: Option<f64>,
     },
 }
@@ -115,9 +155,11 @@ pub struct BandStyle {
 }
 
 impl BandStyle {
+    /// Validated area pattern, including the default when YAML omitted it.
     pub fn pattern(&self) -> BandPattern {
         self.pattern
     }
+    /// Explicit opacity, or `None` when the frontend chooses it.
     pub fn opacity(&self) -> Option<f64> {
         self.opacity
     }
@@ -143,27 +185,36 @@ pub struct SeriesStyle {
 }
 
 impl SeriesStyle {
+    /// Explicit CSS color, or `None` for a frontend-generated color.
     pub fn color(&self) -> Option<&str> {
         self.color.as_deref()
     }
+    /// Explicit line dash style, or `None` for the frontend default.
     pub fn dash(&self) -> Option<Dash> {
         self.dash
     }
+    /// Explicit positive line width in pixels.
     pub fn width(&self) -> Option<f64> {
         self.width
     }
+    /// Explicit opacity of the area below a line.
     pub fn fill(&self) -> Option<f64> {
         self.fill
     }
+    /// Band presentation, present only for a band series.
     pub fn band(&self) -> Option<&BandStyle> {
         self.band.as_ref()
     }
+    /// `Some(false)` suppresses the line for bands; `None` leaves it enabled.
     pub fn line(&self) -> Option<bool> {
         self.line
     }
 }
 
-/// A validated series.
+/// A series validated by [`GraphFields::build`].
+///
+/// Its inputs and presentation are read-only. Change the unvalidated
+/// [`SeriesDef`] and rebuild the graph to modify it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Series {
     pub(crate) kind: SeriesKind,
@@ -172,12 +223,15 @@ pub struct Series {
 }
 
 impl Series {
+    /// Validated data-source operation for this series.
     pub fn kind(&self) -> &SeriesKind {
         &self.kind
     }
+    /// Explicit own label, before combining it with the per-file label.
     pub fn label(&self) -> Option<&str> {
         self.label.as_deref()
     }
+    /// Read-only drawing style passed through to the frontend.
     pub fn style(&self) -> &SeriesStyle {
         &self.style
     }
@@ -192,7 +246,11 @@ impl Series {
     }
 }
 
-/// `y-axis:` of a graph.  Serialized in `api/graph` as `y_axis`.
+/// `y-axis:` of a graph. Serialized in `api/graph` as `y_axis`.
+///
+/// Deserialize from YAML or use [`YAxis::default`] for automatic axes.
+/// [`GraphFields::build`] validates finite bounds, positive intervals and
+/// an integer subdivision of at least two minor intervals per major interval.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct YAxis {
@@ -210,20 +268,29 @@ pub struct YAxis {
 }
 
 impl YAxis {
+    /// Explicit lower bound in scaled units, or `None` for automatic bounds.
     pub fn min(&self) -> Option<f64> {
         self.min
     }
+    /// Explicit upper bound in scaled units, or `None` for automatic bounds.
     pub fn max(&self) -> Option<f64> {
         self.max
     }
+    /// Major tick spacing in scaled units, or `None` for automatic ticks.
     pub fn interval(&self) -> Option<f64> {
         self.interval
     }
+    /// Minor tick spacing in scaled units; requires a major interval.
     pub fn minor_interval(&self) -> Option<f64> {
         self.minor_interval
     }
 }
 
+/// Immutable graph definition validated by [`GraphFields::build`].
+///
+/// The host supplies identity, title and the resolved RRD directory. Graph
+/// settings come from YAML keys rather than a navigation model. Validation
+/// does not require the directory, files or data sources to exist.
 #[derive(Debug, Clone)]
 pub struct Graph {
     /// Opaque identifier assigned by the host application.
@@ -248,48 +315,63 @@ pub struct Graph {
 }
 
 impl Graph {
+    /// Opaque identifier assigned by the host.
     pub fn id(&self) -> &str {
         &self.id
     }
+    /// Display title assigned by the host.
     pub fn title(&self) -> &str {
         &self.title
     }
+    /// Resolved RRD directory supplied by the host; no tilde expansion is done.
     pub fn rrd_dir(&self) -> &std::path::Path {
         &self.rrd_dir
     }
+    /// Validated relative file pattern and its numbered captures.
     pub fn files(&self) -> &FilePattern {
         &self.files
     }
+    /// Validated series in drawing order, with later entries on top.
     pub fn series(&self) -> &[Series] {
         &self.series
     }
+    /// Per-file label template; `None` joins captures with `/`.
     pub fn label(&self) -> Option<&str> {
         self.label.as_deref()
     }
+    /// Display unit supplied by YAML, or `None` for an unspecified unit.
     pub fn unit(&self) -> Option<&str> {
         self.unit.as_deref()
     }
+    /// Initial graph layout, defaulting to [`GraphType::Line`].
     pub fn graph_type(&self) -> GraphType {
         self.graph_type
     }
+    /// Whether the host should offer a stack/unstack control.
     pub fn stack_toggle(&self) -> bool {
         self.stack_toggle
     }
+    /// Number of highest-mean series to keep; `None` keeps all series.
     pub fn top(&self) -> Option<usize> {
         self.top
     }
+    /// Whether to fetch MIN/MAX archive bounds around data-source averages.
     pub fn min_max(&self) -> bool {
         self.min_max
     }
+    /// Nonzero finite multiplier applied to raw values; defaults to `1.0`.
     pub fn scale(&self) -> f64 {
         self.scale
     }
+    /// Raw values above this threshold become unknown before scaling.
     pub fn valid_max(&self) -> Option<f64> {
         self.valid_max
     }
+    /// Maximum seconds an unknown point may repeat the previous known value.
     pub fn hold(&self) -> Option<i64> {
         self.hold
     }
+    /// Optional axis settings in scaled units.
     pub fn y_axis(&self) -> Option<&YAxis> {
         self.y_axis.as_ref()
     }
@@ -297,27 +379,51 @@ impl Graph {
 
 /// Unvalidated YAML keys for one graph. Hosts may flatten these into their
 /// own node descriptions, then supply an id, title and resolved directory.
+///
+/// Fields remain constructible for hosts that deserialize their own nodes.
+/// Call [`GraphFields::build`] before use. When using `serde(flatten)`, the
+/// host struct must also use `serde(deny_unknown_fields)` to reject unknown keys.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct GraphFields {
+    /// Required path pattern relative to the host's resolved RRD directory.
     pub files: Option<String>,
+    /// Single data source shorthand; mutually exclusive with `series`.
     pub ds: Option<String>,
+    /// Nonempty list of series definitions; mutually exclusive with `ds`.
     pub series: Option<Vec<SeriesDef>>,
+    /// Per-file label template using one-based `{N}` wildcard captures.
     pub label: Option<String>,
+    /// Optional display unit passed through to graph data.
     pub unit: Option<String>,
+    /// YAML `type`, defaulting to [`GraphType::Line`].
     #[serde(rename = "type")]
     pub graph_type: Option<GraphType>,
+    /// YAML `stack-toggle`, defaulting to `false`.
     pub stack_toggle: Option<bool>,
+    /// Positive count of highest-mean series to keep; unset keeps all.
     pub top: Option<usize>,
+    /// YAML `min-max`, defaulting to `false`.
     pub min_max: Option<bool>,
+    /// Nonzero finite value multiplier, defaulting to `1.0`.
     pub scale: Option<f64>,
+    /// YAML `valid-max`: optional finite ceiling on raw values.
     pub valid_max: Option<f64>,
+    /// Positive seconds or duration text parsed by [`parse_duration`].
     pub hold: Option<serde_yaml::Value>,
+    /// YAML `y-axis`: optional bounds and major/minor tick intervals.
     pub y_axis: Option<YAxis>,
 }
 
 impl GraphFields {
     /// Parse a standalone graph's YAML keys; no groups or navigation are needed.
+    ///
+    /// This decodes input only; call [`Self::build`] for semantic validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Yaml`] for malformed YAML, unknown keys or
+    /// incorrect value types. The diagnostic file path is empty.
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
         serde_yaml::from_str(text).map_err(|source| ConfigError::Yaml {
             path: PathBuf::new(),
@@ -353,6 +459,17 @@ impl GraphFields {
 
     /// Validate graph keys using the host's diagnostic path and resolved RRD
     /// directory. Missing data is not a configuration error.
+    ///
+    /// `at` identifies the host node in diagnostics. `dir` is already resolved
+    /// by the host; this method does not read configuration or RRD files.
+    /// Defaults are applied once and the returned [`Graph`] is read-only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Invalid`] when `dir` is absent, required keys
+    /// are missing, file/label patterns are invalid, series operations or
+    /// styles conflict, or numeric/duration/axis settings fail validation.
+    /// The error retains `at` unchanged.
     pub fn build(
         self,
         id: String,
@@ -743,6 +860,20 @@ fn invalid(at: &str, message: impl Into<String>) -> ConfigError {
 }
 
 /// Seconds, or a number followed by `s`, `m`, `h`, `d`, `w` or `y` (365 days).
+///
+/// Accepts positive integer YAML numbers or trimmed strings. String amounts
+/// contain decimal digits and an optional unit with no intervening spaces.
+///
+/// # Errors
+///
+/// Returns [`DurationError::Invalid`] for other YAML types, malformed or
+/// nonpositive values, unsupported units, or multiplication beyond `i64`.
+///
+/// ```
+/// use kal_rrd_graph::config::parse_duration;
+/// assert_eq!(parse_duration(&serde_yaml::Value::String("2h".into()))?, 7200);
+/// # Ok::<(), kal_rrd_graph::config::DurationError>(())
+/// ```
 pub fn parse_duration(value: &serde_yaml::Value) -> Result<i64, DurationError> {
     let bad = || DurationError::Invalid {
         value: value.clone(),
@@ -821,8 +952,12 @@ pub(crate) fn label_tokens(template: &str) -> Result<Vec<LabelToken<'_>>, String
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DurationError {
+    /// A value is malformed, nonpositive, or cannot fit in signed seconds.
     #[error("expected seconds or a duration like `30m`, `2h`, `1d`, got {value:?}")]
-    Invalid { value: serde_yaml::Value },
+    Invalid {
+        /// Original rejected YAML value, retained for diagnostics.
+        value: serde_yaml::Value,
+    },
 }
 
 #[cfg(test)]
