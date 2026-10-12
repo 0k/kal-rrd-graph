@@ -142,7 +142,15 @@ pub fn build(graph: &Graph, window: Window, keep: Option<&BTreeSet<String>>) -> 
             last_update = Some(last_update.map_or(t, |l: i64| l.max(t)));
         }
         let file_label = file_label(graph.label.as_deref(), &m.captures);
-        match read_file(&m.path, &needed, graph.min_max, read_window, resolution) {
+        match read_file(
+            &m.path,
+            &needed,
+            graph.min_max,
+            read_window,
+            resolution,
+            &mut notes,
+            &rel,
+        ) {
             Ok(per_ds) => {
                 // Data source -> index of its aligned column in `raws`.
                 let mut columns = BTreeMap::new();
@@ -289,12 +297,52 @@ fn read_file(
     min_max: bool,
     window: Window,
     resolution: i64,
+    notes: &mut Vec<String>,
+    rel: &str,
 ) -> Result<Vec<DsSamples>, String> {
     let avg = fetch(path, ConsolidationFn::Avg, window, resolution)?;
+    let info = min_max
+        .then(|| rrd::ops::info::info(path))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let band = |cf, name: &str, notes: &mut Vec<String>| {
+        // librrd can fall back to AVERAGE when the requested CF has no
+        // archive at the requested resolution. Require an actual CF archive.
+        let finest = info.as_ref().and_then(|info| {
+            let base = info.get("step")?.clone().into_count()?;
+            info.iter()
+                .filter_map(|(key, value)| {
+                    if !key.starts_with("rra[")
+                        || !key.ends_with(".cf")
+                        || value.clone().into_string().as_deref() != Some(name)
+                    {
+                        return None;
+                    }
+                    let key = format!("{}pdp_per_row", key.strip_suffix("cf")?);
+                    let step = info.get(&key)?.clone().into_count()?.checked_mul(base)?;
+                    i64::try_from(step).ok()
+                })
+                .min()
+        });
+        let fetched = finest.and_then(|step| fetch(path, cf, window, resolution.max(step)).ok());
+        match fetched {
+            Some(f)
+                if f.rows
+                    .iter()
+                    .any(|(_, row)| row.iter().any(|v| v.is_finite())) =>
+            {
+                Some(f)
+            }
+            _ => {
+                notes.push(format!("{rel}: no {name} archive"));
+                None
+            }
+        }
+    };
     let (min, max) = if min_max {
         (
-            Some(fetch(path, ConsolidationFn::Min, window, resolution)?),
-            Some(fetch(path, ConsolidationFn::Max, window, resolution)?),
+            band(ConsolidationFn::Min, "MIN", notes),
+            band(ConsolidationFn::Max, "MAX", notes),
         )
     } else {
         (None, None)
@@ -303,16 +351,22 @@ fn read_file(
         .iter()
         .map(|name| {
             let col = avg.names.iter().position(|n| n == name)?;
-            let other = |f: &Option<Fetched>, i: usize| -> f64 {
+            let other = |f: &Option<Fetched>, t: i64| -> f64 {
                 f.as_ref()
-                    .and_then(|f| f.rows.get(i).map(|r| r.1[col]))
+                    .and_then(|f| {
+                        let col = f.names.iter().position(|n| n == name)?;
+                        let i = f.rows.partition_point(|(end, _)| *end < t);
+                        let (end, values) = f.rows.get(i)?;
+                        (i128::from(*end) - i128::from(f.step) < i128::from(t))
+                            .then(|| values.get(col).copied())
+                            .flatten()
+                    })
                     .unwrap_or(f64::NAN)
             };
             let samples = avg
                 .rows
                 .iter()
-                .enumerate()
-                .map(|(i, (t, values))| (*t, values[col], other(&min, i), other(&max, i)))
+                .map(|(t, values)| (*t, values[col], other(&min, *t), other(&max, *t)))
                 .collect();
             Some((avg.step, samples))
         })
