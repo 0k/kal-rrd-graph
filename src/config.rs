@@ -7,12 +7,8 @@ use serde::Deserialize;
 use crate::pattern::FilePattern;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConfigError {
-    #[error("cannot read config file {path}: {source}")]
-    Read {
-        path: PathBuf,
-        source: std::io::Error,
-    },
     #[error("invalid YAML in {path}: {source}")]
     Yaml {
         path: PathBuf,
@@ -25,6 +21,7 @@ pub enum ConfigError {
 /// How the series of a graph are drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum GraphType {
     #[default]
     Line,
@@ -34,6 +31,7 @@ pub enum GraphType {
 /// Line style of a series.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum Dash {
     Solid,
     Dashed,
@@ -43,6 +41,7 @@ pub enum Dash {
 /// How the area of a `band` series is painted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum BandPattern {
     #[default]
     Solid,
@@ -78,6 +77,7 @@ pub struct SeriesDef {
 
 /// What a validated series reads from each matched file.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum SeriesKind {
     /// One data source.
     Ds(String),
@@ -109,9 +109,18 @@ impl SeriesKind {
 /// Band drawing passed to the frontend.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct BandStyle {
-    pub pattern: BandPattern,
+    pub(crate) pattern: BandPattern,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub opacity: Option<f64>,
+    pub(crate) opacity: Option<f64>,
+}
+
+impl BandStyle {
+    pub fn pattern(&self) -> BandPattern {
+        self.pattern
+    }
+    pub fn opacity(&self) -> Option<f64> {
+        self.opacity
+    }
 }
 
 /// Pure presentation of a series, passed through to the frontend.  Every
@@ -119,29 +128,59 @@ pub struct BandStyle {
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize)]
 pub struct SeriesStyle {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub color: Option<String>,
+    pub(crate) color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dash: Option<Dash>,
+    pub(crate) dash: Option<Dash>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub width: Option<f64>,
+    pub(crate) width: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub fill: Option<f64>,
+    pub(crate) fill: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub band: Option<BandStyle>,
+    pub(crate) band: Option<BandStyle>,
     /// `Some(false)` for series drawn without a line (bands).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub line: Option<bool>,
+    pub(crate) line: Option<bool>,
+}
+
+impl SeriesStyle {
+    pub fn color(&self) -> Option<&str> {
+        self.color.as_deref()
+    }
+    pub fn dash(&self) -> Option<Dash> {
+        self.dash
+    }
+    pub fn width(&self) -> Option<f64> {
+        self.width
+    }
+    pub fn fill(&self) -> Option<f64> {
+        self.fill
+    }
+    pub fn band(&self) -> Option<&BandStyle> {
+        self.band.as_ref()
+    }
+    pub fn line(&self) -> Option<bool> {
+        self.line
+    }
 }
 
 /// A validated series.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Series {
-    pub kind: SeriesKind,
-    pub label: Option<String>,
-    pub style: SeriesStyle,
+    pub(crate) kind: SeriesKind,
+    pub(crate) label: Option<String>,
+    pub(crate) style: SeriesStyle,
 }
 
 impl Series {
+    pub fn kind(&self) -> &SeriesKind {
+        &self.kind
+    }
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+    pub fn style(&self) -> &SeriesStyle {
+        &self.style
+    }
     /// Own name of the series: its label, or its data source.
     pub fn own_label(&self) -> &str {
         match (&self.label, &self.kind) {
@@ -158,39 +197,102 @@ impl Series {
 #[serde(deny_unknown_fields)]
 pub struct YAxis {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub min: Option<f64>,
+    pub(crate) min: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max: Option<f64>,
+    pub(crate) max: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub interval: Option<f64>,
+    pub(crate) interval: Option<f64>,
     #[serde(
         rename(deserialize = "minor-interval"),
         skip_serializing_if = "Option::is_none"
     )]
-    pub minor_interval: Option<f64>,
+    pub(crate) minor_interval: Option<f64>,
+}
+
+impl YAxis {
+    pub fn min(&self) -> Option<f64> {
+        self.min
+    }
+    pub fn max(&self) -> Option<f64> {
+        self.max
+    }
+    pub fn interval(&self) -> Option<f64> {
+        self.interval
+    }
+    pub fn minor_interval(&self) -> Option<f64> {
+        self.minor_interval
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Graph {
     /// Opaque identifier assigned by the host application.
-    pub id: String,
-    pub title: String,
+    pub(crate) id: String,
+    pub(crate) title: String,
     /// Effective, resolved RRD directory supplied by the host.
-    pub rrd_dir: PathBuf,
-    pub files: FilePattern,
-    pub series: Vec<Series>,
+    pub(crate) rrd_dir: PathBuf,
+    pub(crate) files: FilePattern,
+    pub(crate) series: Vec<Series>,
     /// Label template using `{N}` for the N-th `*` of `files`.
-    pub label: Option<String>,
-    pub unit: Option<String>,
-    pub graph_type: GraphType,
-    pub stack_toggle: bool,
-    pub top: Option<usize>,
-    pub min_max: bool,
-    pub scale: f64,
-    pub valid_max: Option<f64>,
+    pub(crate) label: Option<String>,
+    pub(crate) unit: Option<String>,
+    pub(crate) graph_type: GraphType,
+    pub(crate) stack_toggle: bool,
+    pub(crate) top: Option<usize>,
+    pub(crate) min_max: bool,
+    pub(crate) scale: f64,
+    pub(crate) valid_max: Option<f64>,
     /// Seconds an unknown point may repeat the last known value.
-    pub hold: Option<i64>,
-    pub y_axis: Option<YAxis>,
+    pub(crate) hold: Option<i64>,
+    pub(crate) y_axis: Option<YAxis>,
+}
+
+impl Graph {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn rrd_dir(&self) -> &std::path::Path {
+        &self.rrd_dir
+    }
+    pub fn files(&self) -> &FilePattern {
+        &self.files
+    }
+    pub fn series(&self) -> &[Series] {
+        &self.series
+    }
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+    pub fn unit(&self) -> Option<&str> {
+        self.unit.as_deref()
+    }
+    pub fn graph_type(&self) -> GraphType {
+        self.graph_type
+    }
+    pub fn stack_toggle(&self) -> bool {
+        self.stack_toggle
+    }
+    pub fn top(&self) -> Option<usize> {
+        self.top
+    }
+    pub fn min_max(&self) -> bool {
+        self.min_max
+    }
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+    pub fn valid_max(&self) -> Option<f64> {
+        self.valid_max
+    }
+    pub fn hold(&self) -> Option<i64> {
+        self.hold
+    }
+    pub fn y_axis(&self) -> Option<&YAxis> {
+        self.y_axis.as_ref()
+    }
 }
 
 /// Unvalidated YAML keys for one graph. Hosts may flatten these into their
@@ -641,8 +743,10 @@ fn invalid(at: &str, message: impl Into<String>) -> ConfigError {
 }
 
 /// Seconds, or a number followed by `s`, `m`, `h`, `d`, `w` or `y` (365 days).
-pub fn parse_duration(value: &serde_yaml::Value) -> Result<i64, String> {
-    let bad = || format!("expected seconds or a duration like `30m`, `2h`, `1d`, got {value:?}");
+pub fn parse_duration(value: &serde_yaml::Value) -> Result<i64, DurationError> {
+    let bad = || DurationError::Invalid {
+        value: value.clone(),
+    };
     let seconds = match value {
         serde_yaml::Value::Number(n) => n.as_i64().ok_or_else(bad)?,
         serde_yaml::Value::String(s) => {
@@ -713,18 +817,12 @@ pub(crate) fn label_tokens(template: &str) -> Result<Vec<LabelToken<'_>>, String
     Ok(tokens)
 }
 
-/// Expand a leading `~` against `$HOME`.
-pub fn expand_tilde(s: &str) -> PathBuf {
-    let Some(rest) = s.strip_prefix('~') else {
-        return PathBuf::from(s);
-    };
-    if !(rest.is_empty() || rest.starts_with('/')) {
-        return PathBuf::from(s);
-    }
-    match std::env::var_os("HOME") {
-        Some(home) => PathBuf::from(home).join(rest.trim_start_matches('/')),
-        None => PathBuf::from(s),
-    }
+/// A rejected YAML duration.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum DurationError {
+    #[error("expected seconds or a duration like `30m`, `2h`, `1d`, got {value:?}")]
+    Invalid { value: serde_yaml::Value },
 }
 
 #[cfg(test)]

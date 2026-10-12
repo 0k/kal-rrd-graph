@@ -12,6 +12,20 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
+/// Why a relative file pattern could not be parsed.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum PatternError {
+    #[error("pattern is empty")]
+    Empty,
+    #[error("{pattern:?} must be relative to `rrd-dir` (no leading `/`)")]
+    Absolute { pattern: String },
+    #[error("{pattern:?} has an empty, `.` or `..` path component")]
+    InvalidComponent { pattern: String },
+    #[error(transparent)]
+    Regex(#[from] regex::Error),
+}
+
 #[derive(Debug, Clone)]
 enum Component {
     Literal(String),
@@ -35,7 +49,7 @@ impl Component {
 
 /// How a relative event path relates to a file pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PatternMatch {
+pub(crate) enum PatternMatch {
     Full,
     Prefix,
     None,
@@ -50,28 +64,28 @@ pub struct FilePattern {
 
 /// One file matched by a [`FilePattern`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct FileMatch {
+pub(crate) struct FileMatch {
     pub path: PathBuf,
     pub captures: Vec<String>,
 }
 
 impl FilePattern {
-    pub fn parse(source: &str) -> Result<FilePattern, String> {
+    pub fn parse(source: &str) -> Result<FilePattern, PatternError> {
         if source.is_empty() {
-            return Err("pattern is empty".into());
+            return Err(PatternError::Empty);
         }
         if source.starts_with('/') {
-            return Err(format!(
-                "{source:?} must be relative to `rrd-dir` (no leading `/`)"
-            ));
+            return Err(PatternError::Absolute {
+                pattern: source.into(),
+            });
         }
         let mut components = Vec::new();
         let mut captures = 0;
         for part in source.split('/') {
             if part.is_empty() || part == "." || part == ".." {
-                return Err(format!(
-                    "{source:?} has an empty, `.` or `..` path component"
-                ));
+                return Err(PatternError::InvalidComponent {
+                    pattern: source.into(),
+                });
             }
             if part.contains('*') {
                 let stars = part.matches('*').count();
@@ -81,7 +95,7 @@ impl FilePattern {
                     .map(regex::escape)
                     .collect::<Vec<_>>()
                     .join("(.*)");
-                let re = Regex::new(&format!("^{body}$")).map_err(|e| e.to_string())?;
+                let re = Regex::new(&format!("^{body}$"))?;
                 components.push(Component::Wild(re));
             } else {
                 components.push(Component::Literal(part.to_string()));
@@ -105,7 +119,7 @@ impl FilePattern {
 
     /// All regular files under `root` matching the pattern, sorted by
     /// path.  Hidden entries (leading `.`) never match a `*`.
-    pub fn expand(&self, root: &Path) -> std::io::Result<Vec<FileMatch>> {
+    pub(crate) fn expand(&self, root: &Path) -> std::io::Result<Vec<FileMatch>> {
         let mut out = Vec::new();
         self.walk(root, 0, Vec::new(), &mut out, &mut |_| {}, false)?;
         out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -114,7 +128,7 @@ impl FilePattern {
 
     /// Existing directories visited by expansion, including the root.
     /// Missing paths are normal; other traversal errors are debug-logged.
-    pub fn dirs(&self, root: &Path) -> Vec<PathBuf> {
+    pub(crate) fn dirs(&self, root: &Path) -> Vec<PathBuf> {
         let mut dirs = Vec::new();
         if let Err(error) = self.walk(
             root,
@@ -135,7 +149,7 @@ impl FilePattern {
     }
 
     /// Match a whole relative path or an intermediate directory, without IO.
-    pub fn match_rel(&self, rel: &Path) -> PatternMatch {
+    pub(crate) fn match_rel(&self, rel: &Path) -> PatternMatch {
         let mut depth = 0;
         for part in rel.components() {
             let std::path::Component::Normal(name) = part else {

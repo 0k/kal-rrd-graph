@@ -108,7 +108,7 @@ pub struct GraphData {
 
 /// One series read from one file, before alignment on the common grid.
 #[derive(Debug, Clone)]
-pub struct RawSeries {
+struct RawSeries {
     pub label: String,
     pub step: i64,
     /// `(time, avg, min, max)`; time is the END of the RRD interval.
@@ -286,7 +286,7 @@ pub fn build(graph: &Graph, window: Window, keep: Option<&BTreeSet<String>>) -> 
 /// both are known and `lower <= upper`, unknown elsewhere.  `avg` is the
 /// upper bound so the frontend draws the band (it skips unknown averages)
 /// while the series itself has no line.
-pub fn band_values(lower: &[Option<f64>], upper: &[Option<f64>]) -> BandValues {
+fn band_values(lower: &[Option<f64>], upper: &[Option<f64>]) -> BandValues {
     let points: Vec<_> = lower
         .iter()
         .zip(upper)
@@ -300,10 +300,10 @@ pub fn band_values(lower: &[Option<f64>], upper: &[Option<f64>]) -> BandValues {
     (hi.clone(), lo, hi)
 }
 
-pub type BandValues = (Vec<Option<f64>>, Vec<Option<f64>>, Vec<Option<f64>>);
+type BandValues = (Vec<Option<f64>>, Vec<Option<f64>>, Vec<Option<f64>>);
 
 /// `a - b` where both are known, clamped below at `floor`.
-pub fn diff_values(a: &[Option<f64>], b: &[Option<f64>], floor: Option<f64>) -> Vec<Option<f64>> {
+fn diff_values(a: &[Option<f64>], b: &[Option<f64>], floor: Option<f64>) -> Vec<Option<f64>> {
     a.iter()
         .zip(b)
         .map(|pair| match pair {
@@ -476,7 +476,7 @@ fn series_label(file_label: &str, own: &str, defs: usize) -> String {
 
 /// Series put on a common grid.
 #[derive(Debug, PartialEq)]
-pub struct Aligned {
+struct Aligned {
     pub start: i64,
     pub step: i64,
     pub len: usize,
@@ -486,7 +486,7 @@ pub struct Aligned {
 /// Per-graph value cleanup applied while aligning (see the `scale`,
 /// `min-max`, `valid-max` and `hold` config keys).
 #[derive(Debug, Clone, Copy)]
-pub struct Cleanup {
+struct Cleanup {
     pub scale: f64,
     pub min_max: bool,
     /// Raw values above this are unknown (e.g. a counter reset read by
@@ -499,7 +499,7 @@ pub struct Cleanup {
 /// Put `raws` on one grid whose step is the coarsest of the requested
 /// resolution and of every file's own step.  Bucket `i` covers
 /// `(g0 + i*step, g0 + (i+1)*step]` and is reported at its end time.
-pub fn align(raws: &[RawSeries], window: Window, resolution: i64, cleanup: &Cleanup) -> Aligned {
+fn align(raws: &[RawSeries], window: Window, resolution: i64, cleanup: &Cleanup) -> Aligned {
     let Cleanup {
         scale,
         min_max,
@@ -606,7 +606,7 @@ fn mean(values: &[Option<f64>]) -> f64 {
 /// Keep the `n` series with the largest mean over the window (largest
 /// first) and sum the others, point by point, into one `other (k)`
 /// series.
-pub fn keep_top(mut series: Vec<SeriesData>, n: usize) -> Vec<SeriesData> {
+fn keep_top(mut series: Vec<SeriesData>, n: usize) -> Vec<SeriesData> {
     if series.len() <= n {
         return series;
     }
@@ -621,7 +621,7 @@ pub fn keep_top(mut series: Vec<SeriesData>, n: usize) -> Vec<SeriesData> {
 }
 
 /// Preserve a full window's chosen labels instead of ranking a short tail.
-pub fn keep_labels(series: Vec<SeriesData>, keep: &BTreeSet<String>) -> Vec<SeriesData> {
+fn keep_labels(series: Vec<SeriesData>, keep: &BTreeSet<String>) -> Vec<SeriesData> {
     let (kept, rest) = series.into_iter().partition(|s| keep.contains(&s.label));
     append_other(kept, rest)
 }

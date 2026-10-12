@@ -81,7 +81,10 @@ struct Source {
 
 impl Source {
     fn set(&self, graph: Graph) {
-        self.graphs.lock().unwrap().insert(graph.id.clone(), graph);
+        self.graphs
+            .lock()
+            .unwrap()
+            .insert(graph.id().to_owned(), graph);
         *self.revision.lock().unwrap() += 1;
     }
 }
@@ -521,6 +524,40 @@ async fn extreme_timestamps_have_a_json_bad_request() {
             )
         );
     }
+}
+
+#[test]
+fn watch_failures_are_typed_and_debug_is_available() {
+    use kal_rrd_graph::watch::WatchError;
+    let f = fixture();
+    let error = f.watch.subscribe(Some("bad".into()), vec![]).unwrap_err();
+    assert!(matches!(error, WatchError::InvalidSubscription));
+    assert_eq!(error.to_string(), "invalid subscription id");
+    let error = f.watch.subscribe(None, vec!["host-a".into()]).unwrap_err();
+    assert!(matches!(&error, WatchError::NotAGraph { id } if id == "host-a"));
+    assert_eq!(error.to_string(), "\"host-a\" is a group, not a graph");
+    let error = f.watch.subscribe(None, vec!["unknown".into()]).unwrap_err();
+    assert!(matches!(&error, WatchError::NotFound { id } if id == "unknown"));
+    assert_eq!(error.to_string(), "no graph \"unknown\"");
+    let error = GraphWatch::with_timing(
+        f.source.clone(),
+        WatchTiming {
+            tick: Duration::ZERO,
+            ..WatchTiming::default()
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(error, WatchError::NonzeroTiming));
+    assert_eq!(error.to_string(), "graph watch timing must be nonzero");
+    fn debug<T: std::fmt::Debug>(_: &T) {}
+    debug(&ApiState {
+        source: f.source.clone(),
+        watch: f.watch.clone(),
+    });
+    debug(&*f.watch);
+    debug(&WatchTiming::default());
+    debug(&kal_rrd_graph::watch::GraphChange { id: "g".into() });
+    debug(&kal_rrd_graph::watch::WatchSnapshot { ids: vec![] });
 }
 
 #[tokio::test]

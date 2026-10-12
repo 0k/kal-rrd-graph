@@ -5,6 +5,7 @@ use crate::Graph;
 /// A graph lookup preserves the distinction between an unknown id and an
 /// application navigation item that cannot be graphed.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Lookup {
     Graph(Box<Graph>),
     NotAGraph,

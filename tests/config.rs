@@ -76,13 +76,13 @@ fn graph_defaults_and_stack_toggle_match_yaml() {
     let a = graph("files: a.rrd\nds: v");
     assert_eq!(
         (
-            a.graph_type,
-            a.stack_toggle,
-            a.min_max,
-            a.scale,
-            a.hold,
-            a.valid_max,
-            a.top
+            a.graph_type(),
+            a.stack_toggle(),
+            a.min_max(),
+            a.scale(),
+            a.hold(),
+            a.valid_max(),
+            a.top()
         ),
         (GraphType::Line, false, false, 1.0, None, None, None)
     );
@@ -90,15 +90,15 @@ fn graph_defaults_and_stack_toggle_match_yaml() {
         let b = graph(&format!(
             "files: a.rrd\nds: v\ntype: {kind}\nstack-toggle: true"
         ));
-        assert_eq!((b.graph_type, b.stack_toggle), (expected, true));
+        assert_eq!((b.graph_type(), b.stack_toggle()), (expected, true));
     }
 }
 
 #[test]
 fn hold_accepts_seconds_or_a_duration_with_unit() {
-    assert_eq!(graph("files: a.rrd\nds: v\nhold: 90").hold, Some(90));
+    assert_eq!(graph("files: a.rrd\nds: v\nhold: 90").hold(), Some(90));
     let b = graph("files: a.rrd\nds: v\nhold: 2h\nvalid-max: 1e10");
-    assert_eq!((b.hold, b.valid_max), (Some(7200), Some(1e10)));
+    assert_eq!((b.hold(), b.valid_max()), (Some(7200), Some(1e10)));
 }
 
 #[test]
@@ -147,18 +147,18 @@ const FRISQUET: &str = indoc::indoc! {r##"
 
 #[test]
 fn drawing_keys_build_validated_series_and_y_axis() {
-    use kal_rrd_graph::config::{BandPattern, Dash, SeriesKind, YAxis};
+    use kal_rrd_graph::config::{BandPattern, Dash, SeriesKind};
     let g = graph(FRISQUET);
     assert_eq!(
-        g.y_axis,
-        Some(YAxis {
-            min: None,
-            max: None,
-            interval: Some(1.0),
-            minor_interval: Some(0.5)
-        })
+        g.y_axis().map(|axis| (
+            axis.min(),
+            axis.max(),
+            axis.interval(),
+            axis.minor_interval()
+        )),
+        Some((None, None, Some(1.0), Some(0.5)))
     );
-    let kinds: Vec<_> = g.series.iter().map(|s| s.kind.clone()).collect();
+    let kinds: Vec<_> = g.series().iter().map(|s| s.kind().clone()).collect();
     assert_eq!(
         kinds,
         vec![
@@ -177,16 +177,16 @@ fn drawing_keys_build_validated_series_and_y_axis() {
         ]
     );
     let styles: Vec<_> = g
-        .series
+        .series()
         .iter()
         .map(|s| {
             (
-                s.style.color.as_deref(),
-                s.style.dash,
-                s.style.width,
-                s.style.fill,
-                s.style.band.map(|b| b.pattern),
-                s.style.line,
+                s.style().color(),
+                s.style().dash(),
+                s.style().width(),
+                s.style().fill(),
+                s.style().band().map(|b| b.pattern()),
+                s.style().line(),
             )
         })
         .collect();
@@ -214,7 +214,7 @@ fn drawing_keys_build_validated_series_and_y_axis() {
             (Some("red"), None, None, None, None, None),
         ]
     );
-    assert_eq!(graph("files: a.rrd\nds: v").y_axis, None);
+    assert_eq!(graph("files: a.rrd\nds: v").y_axis(), None);
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn invalid_drawing_keys_name_the_graph_and_series() {
 #[test]
 fn frisquet_example_is_a_valid_graph() {
     let g = graph(include_str!("../examples/frisquet.yaml"));
-    assert_eq!(g.series.len(), 8);
+    assert_eq!(g.series().len(), 8);
 }
 
 #[test]

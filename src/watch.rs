@@ -27,20 +27,42 @@ const SETTLE: Duration = Duration::from_secs(1);
 const GRACE: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_secs(1);
 
+/// Initialization, subscription validation or worker communication failure.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum WatchError {
+    #[error("graph watch timing must be nonzero")]
+    NonzeroTiming,
+    #[error("failed to initialize graph file watcher (inotify): {0}")]
+    Initialize(#[source] notify::Error),
+    #[error("failed to spawn graph watch worker: {0}")]
+    Spawn(#[source] std::io::Error),
+    #[error("invalid subscription id")]
+    InvalidSubscription,
+    #[error("{id:?} is a group, not a graph")]
+    NotAGraph { id: String },
+    #[error("no graph {id:?}")]
+    NotFound { id: String },
+    #[error("graph watch worker stopped: {0}")]
+    WorkerStopped(String),
+    #[error("graph watch rescan failed: {0}")]
+    Rescan(#[source] mpsc::RecvError),
+}
+
 /// The graph whose files changed; clients fetch that graph's tail.
-#[derive(Serialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct GraphChange {
     pub id: String,
 }
 
 /// Snapshot of one client's displayed graph ids, sorted and deduplicated.
-#[derive(Serialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct WatchSnapshot {
     pub ids: Vec<String>,
 }
 
 /// Worker timing, injectable so lifecycle and debounce tests need no long waits.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct WatchTiming {
     pub settle: Duration,
     pub grace: Duration,
@@ -78,9 +100,17 @@ pub struct GraphWatch {
     worker: Option<JoinHandle<()>>,
 }
 
+impl std::fmt::Debug for GraphWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphWatch")
+            .field("worker", &self.worker)
+            .finish_non_exhaustive()
+    }
+}
+
 impl GraphWatch {
     /// Initialize the notify backend before serving either run mode.
-    pub fn new(live: Arc<dyn GraphSource>) -> Result<Arc<Self>, String> {
+    pub fn new(live: Arc<dyn GraphSource>) -> Result<Arc<Self>, WatchError> {
         Self::with_timing(live, WatchTiming::default())
     }
 
@@ -88,9 +118,9 @@ impl GraphWatch {
     pub fn with_timing(
         live: Arc<dyn GraphSource>,
         timing: WatchTiming,
-    ) -> Result<Arc<Self>, String> {
+    ) -> Result<Arc<Self>, WatchError> {
         if timing.tick.is_zero() || timing.settle.is_zero() || timing.grace.is_zero() {
-            return Err("graph watch timing must be nonzero".into());
+            return Err(WatchError::NonzeroTiming);
         }
         let (tx, rx) = mpsc::channel();
         let callback_tx = tx.clone();
@@ -98,7 +128,7 @@ impl GraphWatch {
             // Receiver shutdown is normal: the worker owns and drops this watcher.
             let _ = callback_tx.send(Message::Fs(event));
         })
-        .map_err(|e| format!("failed to initialize graph file watcher (inotify): {e}"))?;
+        .map_err(WatchError::Initialize)?;
         let interests = Arc::new(Mutex::new(HashMap::new()));
         let events = Arc::new(Mutex::new(EventLog::new(
             SUBSCRIPTION_TTL,
@@ -124,7 +154,7 @@ impl GraphWatch {
                 }
                 .run(rx);
             })
-            .map_err(|e| format!("failed to spawn graph watch worker: {e}"))?;
+            .map_err(WatchError::Spawn)?;
         Ok(Arc::new(Self {
             live,
             interests,
@@ -139,17 +169,17 @@ impl GraphWatch {
         &self,
         sub: Option<String>,
         ids: Vec<String>,
-    ) -> Result<(WatchSnapshot, SubId, u64), String> {
+    ) -> Result<(WatchSnapshot, SubId, u64), WatchError> {
         if sub.as_deref().is_some_and(|sub| !valid_sub(sub)) {
-            return Err("invalid subscription id".into());
+            return Err(WatchError::InvalidSubscription);
         }
         let ids: BTreeSet<_> = ids.into_iter().collect();
         let ordered: Vec<_> = ids.iter().cloned().collect();
         for (id, lookup) in ordered.iter().zip(self.live.lookup_many(&ordered)) {
             match lookup {
                 Lookup::Graph(_) => {}
-                Lookup::NotAGraph => return Err(format!("{id:?} is a group, not a graph")),
-                Lookup::NotFound => return Err(format!("no graph {id:?}")),
+                Lookup::NotAGraph => return Err(WatchError::NotAGraph { id: id.clone() }),
+                Lookup::NotFound => return Err(WatchError::NotFound { id: id.clone() }),
             }
         }
         let (sub, index) = {
@@ -178,10 +208,8 @@ impl GraphWatch {
         let (ready_tx, ready_rx) = mpsc::channel();
         self.tx
             .send(Message::Rescan(Some(ready_tx)))
-            .map_err(|e| format!("graph watch worker stopped: {e}"))?;
-        ready_rx
-            .recv()
-            .map_err(|e| format!("graph watch rescan failed: {e}"))?;
+            .map_err(|e| WatchError::WorkerStopped(e.to_string()))?;
+        ready_rx.recv().map_err(WatchError::Rescan)?;
         Ok((
             WatchSnapshot {
                 ids: ids.into_iter().collect(),

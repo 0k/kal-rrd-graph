@@ -22,7 +22,7 @@ use serde::Deserialize;
 
 use crate::graph::{self, Window};
 use crate::source::{GraphSource, Lookup};
-use crate::watch::{valid_sub, GraphWatch, StreamGuard};
+use crate::watch::{valid_sub, GraphWatch, StreamGuard, WatchError};
 
 /// Bounds on `points`, so a request cannot ask for a useless or huge
 /// response.
@@ -33,6 +33,14 @@ pub const MAX_POINTS: usize = 5000;
 pub struct ApiState {
     pub source: Arc<dyn GraphSource>,
     pub watch: Arc<GraphWatch>,
+}
+
+impl std::fmt::Debug for ApiState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiState")
+            .field("watch", &self.watch)
+            .finish_non_exhaustive()
+    }
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -87,15 +95,19 @@ async fn watch_snapshot(
             );
             response
         }
-        Err(message) => {
-            let status = if message.starts_with("no graph ") {
-                StatusCode::NOT_FOUND
-            } else if message.starts_with("graph watch ") {
-                StatusCode::INTERNAL_SERVER_ERROR
-            } else {
-                StatusCode::BAD_REQUEST
+        Err(error_value) => {
+            let status = match &error_value {
+                WatchError::NotFound { .. } => StatusCode::NOT_FOUND,
+                WatchError::InvalidSubscription | WatchError::NotAGraph { .. } => {
+                    StatusCode::BAD_REQUEST
+                }
+                WatchError::NonzeroTiming
+                | WatchError::Initialize(_)
+                | WatchError::Spawn(_)
+                | WatchError::WorkerStopped(_)
+                | WatchError::Rescan(_) => StatusCode::INTERNAL_SERVER_ERROR,
             };
-            error(status, &message)
+            error(status, &error_value.to_string())
         }
     }
 }
@@ -165,7 +177,7 @@ impl Stream for InterestStream {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct GraphQuery {
+struct GraphQuery {
     id: String,
     start: i64,
     end: i64,
