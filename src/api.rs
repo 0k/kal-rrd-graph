@@ -190,6 +190,9 @@ async fn graph_data(
     if q.end <= q.start {
         return error(StatusCode::BAD_REQUEST, "`end` must be after `start`");
     }
+    if !Window::from_points(q.start, q.end, DEFAULT_POINTS).in_range(None) {
+        return error(StatusCode::BAD_REQUEST, "`start` or `end` is out of range");
+    }
     if q.points.is_some() && q.step.is_some() {
         return error(
             StatusCode::BAD_REQUEST,
@@ -227,6 +230,9 @@ async fn graph_data(
         }
         Lookup::NotFound => return error(StatusCode::NOT_FOUND, &format!("no graph {:?}", q.id)),
     };
+    if !window.in_range(graph.hold) {
+        return error(StatusCode::BAD_REQUEST, "`start` or `end` is out of range");
+    }
     match tokio::task::spawn_blocking(move || graph::build(&graph, window, keep.as_ref())).await {
         Ok(data) => Json(data).into_response(),
         Err(e) => error(

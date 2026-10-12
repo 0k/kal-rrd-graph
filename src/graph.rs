@@ -51,6 +51,24 @@ impl Window {
             ..self
         }
     }
+
+    pub(crate) fn in_range(self, hold: Option<i64>) -> bool {
+        self.end > self.start && grid(self, self.resolution.max(1), hold).is_some()
+    }
+}
+
+fn grid(window: Window, step: i64, hold: Option<i64>) -> Option<(i64, i64, usize, usize)> {
+    window.end.checked_sub(window.start)?;
+    window.start.checked_sub(1)?;
+    let last = window.end.checked_add(step)?;
+    UNIX_EPOCH.checked_add(Duration::from_secs(last.max(0) as u64))?;
+    let original_g0 = window.start.div_euclid(step).checked_mul(step)?;
+    let read_start = window.start.checked_sub(hold.unwrap_or(0).max(0))?;
+    let g0 = read_start.div_euclid(step).checked_mul(step)?;
+    let span = window.end.checked_sub(g0)?.checked_add(step - 1)?;
+    let len = usize::try_from((span / step).max(0)).ok()?;
+    let trim = usize::try_from(original_g0.checked_sub(g0)? / step).ok()?;
+    Some((original_g0.checked_add(step)?, g0, len, trim))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -102,6 +120,22 @@ pub fn build(graph: &Graph, window: Window, keep: Option<&BTreeSet<String>>) -> 
     let mut notes = Vec::new();
     let mut raws = Vec::new();
     let mut last_update = None;
+
+    if !window.in_range(graph.hold) {
+        return GraphData {
+            id: graph.id.clone(),
+            title: graph.title.clone(),
+            unit: graph.unit.clone(),
+            graph_type: graph.graph_type,
+            start: window.start,
+            step: window.resolution.max(1),
+            len: 0,
+            series: Vec::new(),
+            last_update: None,
+            notes: vec!["`start` or `end` is out of range".into()],
+            y_axis: graph.y_axis,
+        };
+    }
 
     let matches = match graph.files.expand(&graph.rrd_dir) {
         Ok(m) => m,
@@ -195,7 +229,7 @@ pub fn build(graph: &Graph, window: Window, keep: Option<&BTreeSet<String>>) -> 
                 .kind
                 .inputs()
                 .iter()
-                .map(|ds| columns.get(ds).map(|&i| &aligned.series[i]))
+                .map(|ds| columns.get(ds).and_then(|&i| aligned.series.get(i)))
                 .collect::<Option<Vec<_>>>()
             else {
                 continue;
@@ -416,12 +450,15 @@ fn file_label(template: Option<&str>, captures: &[String]) -> String {
     match template {
         None => captures.join("/"),
         Some(t) => label_tokens(t)
-            // Validated at config load time.
-            .expect("label template validated at load")
+            .unwrap_or_else(|_| vec![LabelToken::Text(t)])
             .into_iter()
             .map(|tok| match tok {
                 LabelToken::Text(s) => s.to_string(),
-                LabelToken::Capture(n) => captures.get(n - 1).cloned().unwrap_or_default(),
+                LabelToken::Capture(n) => n
+                    .checked_sub(1)
+                    .and_then(|i| captures.get(i))
+                    .cloned()
+                    .unwrap_or_default(),
             })
             .collect(),
     }
@@ -475,10 +512,14 @@ pub fn align(raws: &[RawSeries], window: Window, resolution: i64, cleanup: &Clea
         .map(|r| r.step)
         .fold(resolution, i64::max)
         .max(1);
-    let original_g0 = window.start.div_euclid(step) * step;
-    let g0 = window.lookback(hold).start.div_euclid(step) * step;
-    let len = ((window.end - g0 + step - 1) / step).max(0) as usize;
-    let trim = ((original_g0 - g0) / step).max(0) as usize;
+    let Some((start, g0, len, trim)) = grid(window, step, hold) else {
+        return Aligned {
+            start: window.start,
+            step,
+            len: 0,
+            series: Vec::new(),
+        };
+    };
     let series = raws
         .iter()
         .map(|raw| {
@@ -487,7 +528,10 @@ pub fn align(raws: &[RawSeries], window: Window, resolution: i64, cleanup: &Clea
             let mut min = vec![f64::INFINITY; len];
             let mut max = vec![f64::NEG_INFINITY; len];
             for &(t, a, lo, hi) in &raw.samples {
-                let idx = (t - 1 - g0).div_euclid(step);
+                let Some(offset) = t.checked_sub(1).and_then(|t| t.checked_sub(g0)) else {
+                    continue;
+                };
+                let idx = offset.div_euclid(step);
                 if idx < 0 || idx as usize >= len {
                     continue;
                 }
@@ -524,7 +568,7 @@ pub fn align(raws: &[RawSeries], window: Window, resolution: i64, cleanup: &Clea
         })
         .collect();
     Aligned {
-        start: original_g0 + step,
+        start,
         step,
         len: len.saturating_sub(trim),
         series,
@@ -538,7 +582,9 @@ fn hold_values(mut values: Vec<Option<f64>>, step: i64, hold: i64) -> Vec<Option
     for (i, v) in values.iter_mut().enumerate() {
         match (*v, last) {
             (Some(x), _) => last = Some((i, x)),
-            (None, Some((j, x))) if (i - j) as i64 * step <= hold => *v = Some(x),
+            (None, Some((j, x))) if (i - j) as i128 * i128::from(step) <= i128::from(hold) => {
+                *v = Some(x)
+            }
             (None, _) => {}
         }
     }
@@ -581,13 +627,15 @@ pub fn keep_labels(series: Vec<SeriesData>, keep: &BTreeSet<String>) -> Vec<Seri
 }
 
 fn append_other(mut series: Vec<SeriesData>, rest: Vec<SeriesData>) -> Vec<SeriesData> {
-    let Some(first) = rest.first() else {
+    let Some(len) = rest.iter().map(|s| s.avg.len()).max() else {
         return series;
     };
-    let len = first.avg.len();
     let other = (0..len)
         .map(|i| {
-            let values: Vec<f64> = rest.iter().filter_map(|s| s.avg[i]).collect();
+            let values: Vec<f64> = rest
+                .iter()
+                .filter_map(|s| s.avg.get(i).copied().flatten())
+                .collect();
             (!values.is_empty()).then(|| values.iter().sum())
         })
         .collect();
@@ -604,6 +652,44 @@ fn append_other(mut series: Vec<SeriesData>, rest: Vec<SeriesData>) -> Vec<Serie
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_labels_render_without_panicking() {
+        let captures = vec!["one".into()];
+        assert_eq!(file_label(Some("{"), &captures), "{");
+        assert_eq!(file_label(Some("x{0}{2}"), &captures), "x");
+    }
+
+    #[test]
+    fn unequal_series_lengths_sum_all_available_points() {
+        let s = |label: &str, avg| SeriesData {
+            label: label.into(),
+            avg,
+            min: None,
+            max: None,
+            style: SeriesStyle::default(),
+        };
+        for series in [
+            vec![s("a", vec![Some(1.0)]), s("b", vec![Some(2.0), Some(3.0)])],
+            vec![s("b", vec![Some(2.0), Some(3.0)]), s("a", vec![Some(1.0)])],
+        ] {
+            let expected = vec![s("other (2)", vec![Some(3.0), Some(3.0)])];
+            assert_eq!(keep_top(series.clone(), 0), expected);
+            assert_eq!(keep_labels(series, &BTreeSet::new()), expected);
+        }
+    }
+
+    #[test]
+    fn extreme_alignment_returns_an_empty_grid_without_panicking() {
+        for window in [
+            Window::from_points(i64::MIN, i64::MAX, 800),
+            Window::from_step(i64::MAX - 7, i64::MAX, 2),
+        ] {
+            let result = align(&[], window, window.resolution, &plain(false));
+            assert_eq!(result.len, 0);
+            assert_eq!(result.series, Vec::new());
+        }
+    }
 
     fn raw(label: &str, step: i64, samples: &[(i64, f64)]) -> RawSeries {
         RawSeries {

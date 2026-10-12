@@ -504,6 +504,26 @@ async fn styled_graph_carries_drawing_keys_and_computed_band_and_diff() {
 }
 
 #[tokio::test]
+async fn extreme_timestamps_have_a_json_bad_request() {
+    let f = fixture();
+    for (start, end, suffix) in [
+        (i64::MIN, i64::MAX, ""),
+        (0, i64::MAX, ""),
+        (i64::MAX - 7, i64::MAX, "&step=2"),
+        (i64::MIN, i64::MIN + 7, "&step=2"),
+    ] {
+        let uri = format!("/api/graph?id=host-a/load&start={start}&end={end}{suffix}");
+        assert_eq!(
+            get(&f, &uri).await,
+            (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error": "`start` or `end` is out of range"}),
+            )
+        );
+    }
+}
+
+#[tokio::test]
 async fn bad_requests_are_rejected_with_a_reason() {
     let f = fixture();
     let (s, e) = get(&f, "/api/graph?id=nope&start=0&end=10").await;

@@ -147,7 +147,8 @@ impl Series {
         match (&self.label, &self.kind) {
             (Some(label), _) => label,
             (None, SeriesKind::Ds(ds)) => ds,
-            (None, _) => unreachable!("band and diff series have a validated label"),
+            (None, SeriesKind::Band { lower, .. }) => lower,
+            (None, SeriesKind::Diff { minuend, .. }) => minuend,
         }
     }
 }
@@ -723,5 +724,32 @@ pub fn expand_tilde(s: &str) -> PathBuf {
     match std::env::var_os("HOME") {
         Some(home) => PathBuf::from(home).join(rest.trim_start_matches('/')),
         None => PathBuf::from(s),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unlabeled_derived_series_have_a_total_fallback() {
+        for kind in [
+            SeriesKind::Band {
+                lower: "a".into(),
+                upper: "b".into(),
+            },
+            SeriesKind::Diff {
+                minuend: "a".into(),
+                subtrahend: "b".into(),
+                floor: None,
+            },
+        ] {
+            let series = Series {
+                kind,
+                label: None,
+                style: SeriesStyle::default(),
+            };
+            assert_eq!(series.own_label(), "a");
+        }
     }
 }
