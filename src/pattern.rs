@@ -49,6 +49,7 @@ impl Component {
 
 /// How a relative event path relates to a file pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(feature = "watch", test))]
 pub(crate) enum PatternMatch {
     Full,
     Prefix,
@@ -128,6 +129,7 @@ impl FilePattern {
 
     /// Existing directories visited by expansion, including the root.
     /// Missing paths are normal; other traversal errors are debug-logged.
+    #[cfg(any(feature = "watch", test))]
     pub(crate) fn dirs(&self, root: &Path) -> Vec<PathBuf> {
         let mut dirs = Vec::new();
         if let Err(error) = self.walk(
@@ -149,6 +151,7 @@ impl FilePattern {
     }
 
     /// Match a whole relative path or an intermediate directory, without IO.
+    #[cfg(any(feature = "watch", test))]
     pub(crate) fn match_rel(&self, rel: &Path) -> PatternMatch {
         let mut depth = 0;
         for part in rel.components() {

@@ -219,11 +219,13 @@ impl GraphWatch {
         ))
     }
 
+    #[cfg(feature = "api")]
     pub(crate) fn log(&self) -> Arc<Mutex<EventLog<GraphChange>>> {
         self.events.clone()
     }
 
     /// Keep the interest alive for the lifetime of a successful SSE body.
+    #[cfg(feature = "api")]
     pub(crate) fn attach(self: &Arc<Self>, sub: &str) -> Option<StreamGuard> {
         let mut interests = self
             .interests
@@ -252,11 +254,13 @@ impl Drop for GraphWatch {
     }
 }
 
+#[cfg(feature = "api")]
 pub(crate) struct StreamGuard {
     watch: Arc<GraphWatch>,
     sub: SubId,
 }
 
+#[cfg(feature = "api")]
 impl Drop for StreamGuard {
     fn drop(&mut self) {
         {

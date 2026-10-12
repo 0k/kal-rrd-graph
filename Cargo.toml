@@ -22,19 +22,28 @@ exclude = [
     ".pkg/",
 ]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["api", "watch"]
+watch = ["dep:kal-fs-watch", "dep:kal-sse"]
+api = ["watch", "dep:axum", "kal-sse/axum", "dep:tokio", "dep:futures-core", "dep:serde_json"]
+
 [dependencies]
 rrd = "0.3.1"
-kal-fs-watch = "0.1"
-kal-sse = { version = "0.2", features = ["axum"] }
+kal-fs-watch = { version = "0.1", optional = true }
+kal-sse = { version = "0.2", optional = true }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
-serde_json = "1"
+serde_json = { version = "1", optional = true }
 regex = "1"
 thiserror = "2"
-axum = "0.8"
-futures-core = "0.3"
-tokio = { version = "1", features = ["rt"] }
+axum = { version = "0.8", optional = true }
+futures-core = { version = "0.3", optional = true }
+tokio = { version = "1", features = ["rt"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
@@ -42,5 +51,13 @@ indoc = "2"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+
+[[test]]
+name = "api"
+required-features = ["api"]
+
+[[test]]
+name = "watch"
+required-features = ["watch"]
 
 [workspace]
