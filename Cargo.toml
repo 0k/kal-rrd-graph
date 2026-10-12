@@ -2,6 +2,7 @@
 name = "kal-rrd-graph"
 version = "%%version%%"
 edition = "2021"
+rust-version = "1.82"
 description = "Describe, fetch, watch and serve one YAML-configured RRD graph"
 license = "MIT"
 authors = ["Valentin Lab <valentin.lab@kalysto.org>"]
@@ -30,12 +31,13 @@ serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1"
 regex = "1"
-thiserror = "1"
+thiserror = "2"
 axum = "0.8"
 futures-core = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
+tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 indoc = "2"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
