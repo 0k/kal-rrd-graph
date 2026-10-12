@@ -182,7 +182,7 @@ impl GraphWatch {
         let worker_interests = interests.clone();
         let worker_events = events.clone();
         let worker = thread::Builder::new()
-            .name("rrd-graph-watch".into())
+            .name("kal-rrd-graph-watch".into())
             .spawn(move || {
                 Worker {
                     watcher,
@@ -555,5 +555,27 @@ impl Worker {
             }
         }
         rescan
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoGraphs;
+
+    impl GraphSource for NoGraphs {
+        fn lookup(&self, _: &str) -> Lookup {
+            Lookup::NotFound
+        }
+    }
+
+    #[test]
+    fn worker_has_library_scoped_thread_name() {
+        let watch = GraphWatch::new(Arc::new(NoGraphs)).unwrap();
+        assert_eq!(
+            watch.worker.as_ref().unwrap().thread().name(),
+            Some("kal-rrd-graph-watch")
+        );
     }
 }
