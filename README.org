@@ -9,8 +9,8 @@
 =kal-rrd-graph= describes, fetches, watches and serves one RRD graph.
 It reads through =rrd= / librrd and never writes RRD files outside tests.
 It does not know about application groups, side panels, ranges, slugs or
-configuration reload policy. Applications can
-embed one graph beside their own controls with the companion Vue package
+configuration reload policy: those belong to the application. A web
+frontend can draw the served graph with the companion Vue package
 =@0k/rrd-graph=.
 
 * Usage
@@ -122,8 +122,8 @@ several series, each series is named ~<file label> <series label>~.
 365 days. Unknown keys, empty series, invalid captures, zero ~top~,
 nonfinite/zero scale and nonfinite valid-max are rejected strictly.
 
-The graph's title and its RRD directory belong to the host (for example a tree
-node's ~title~ and ~rrd-dir~), not to these keys.
+The graph's title and its RRD directory belong to the host
+application, not to these keys.
 
 ** Series entries
 

@@ -1,4 +1,4 @@
-//! Standalone graph validation contracts extracted from a host application's config tests.
+//! Standalone graph validation contracts.
 use kal_rrd_graph::{GraphFields, GraphType};
 use std::path::PathBuf;
 
