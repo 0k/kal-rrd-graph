@@ -10,46 +10,66 @@
 It reads through =rrd= / librrd and never writes RRD files outside tests.
 It does not know about application groups, side panels, ranges, slugs or
 configuration reload policy. Applications can
-embed one graph beside their own controls with =@0k/rrd-graph=.
+embed one graph beside their own controls with the companion Vue package
+=@0k/rrd-graph=.
 
 * Usage
 
-Add ~kal-rrd-graph = "0.1"~ to ~Cargo.toml~. Before publication, develop
-against a sibling through a git-ignored ~.cargo/config.toml~:
+Add ~kal-rrd-graph = "0.1"~ to ~Cargo.toml~.
 
-#+begin_src toml
-[patch.crates-io]
-kal-rrd-graph = { path = "../kal-rrd-graph" }
-#+end_src
+Building requires librrd 1.5 or newer, its development headers and
+~pkg-config~. On Debian/Ubuntu install ~librrd-dev~ and ~pkg-config~;
+the librrd shared library is also required at runtime.
+
+The default-on features are ~watch~ (file interests and change tracking)
+and ~api~ (axum JSON/SSE endpoints, implies ~watch~). Disable default
+features for YAML validation and graph fetching only; enable just ~watch~
+for file interests without the HTTP adapter.
 
 The host assigns an opaque id and title, resolves the RRD directory, and
-supplies its diagnostic path. No tree is required:
+supplies its diagnostic path. No tree is required. These examples belong
+inside a function returning ~Result<(), Box<dyn std::error::Error>>~:
 
 #+begin_src rust
-use kal_rrd_graph::{GraphFields, graph::{build, Window}};
+use kal_rrd_graph::{
+    graph::{build, Window},
+    GraphFields,
+};
 
 let fields = GraphFields::parse("files: temperature.rrd\nds: value\nunit: °C")?;
-let graph = fields.build("boiler".into(), "Boiler".into(), "Boiler",
-    Some("/var/lib/boiler/rrd".into()))?;
+let graph = fields.build(
+    "boiler".into(),
+    "Boiler".into(),
+    "Boiler",
+    Some("/var/lib/boiler/rrd".into()),
+)?;
+let (start, end) = (1_700_000_000, 1_700_003_600);
 let data = build(&graph, Window::from_points(start, end, 800), None);
 #+end_src
 
 ~GraphFields~ can also be flattened into a host's YAML node, so the host
 keeps its navigation and path inheritance while this crate validates all
-graph keys. ~ConfigError::Invalid~ retains the supplied diagnostic path.
+graph keys. Unknown keys are rejected in a flattened node only when the
+host struct also uses ~#[serde(deny_unknown_fields)]~.
+~ConfigError::Invalid~ retains the supplied diagnostic path.
 Missing data yields per-graph ~notes~, not a configuration error.
 
 ** HTTP and file watching
 
+With ~api~ enabled, continue with ~graph~ from the example above:
+
 #+begin_src rust
+use kal_rrd_graph::{api, watch::GraphWatch, Graph, GraphSource, Lookup};
 use std::sync::Arc;
-use kal_rrd_graph::{Graph, GraphSource, Lookup, api, watch::GraphWatch};
 
 struct Single(Graph);
 impl GraphSource for Single {
     fn lookup(&self, id: &str) -> Lookup {
-        if id == self.0.id { Lookup::Graph(Box::new(self.0.clone())) }
-        else { Lookup::NotFound }
+        if id == self.0.id() {
+            Lookup::Graph(Box::new(self.0.clone()))
+        } else {
+            Lookup::NotFound
+        }
     }
 }
 let source: Arc<dyn GraphSource> = Arc::new(Single(graph));
@@ -94,7 +114,7 @@ use relative URLs and a configurable API base.
 | ~scale~        | ~1~                  | Multiply every value (e.g. ~1024~ for sizes stored in KiB)                                |
 | ~valid-max~    | none                 | Treat stored values above it as unknown (e.g. counter resets read as wraps)               |
 | ~hold~         | none                 | Repeat the last known value over unknown points up to this long (~90~, ~30m~, ~2h~, ~1d~) |
-| ~y-axis~       | automatic            | ~{min, max, interval, minor-interval}~; see [[*Y axis][Y axis]]                                     |
+| ~y-axis~       | automatic            | ~{min, max, interval, minor-interval}~; see Y axis below                                   |
 
 Set exactly one of ~ds~ and ~series~. When there are several files and
 several series, each series is named ~<file label> <series label>~.
@@ -171,7 +191,7 @@ response's common time grid and may not request more than 5000 points.
 Repeated ~keep=<label>~ parameters preserve a ~top~ graph's winners.
 
 The JSON has ~id~, ~title~, ~unit~, ~type~, ~start~, ~step~, ~len~,
-~series~ (~label~, ~avg~, optional ~min~/~max~), ~last_update~ and
+~series~ (~label~, ~avg~, optional ~min~ / ~max~), ~last_update~ and
 ~notes~. Unknown values are ~null~; missing files or data sources are
 notes. Point ~i~ summarises the interval ending at ~start + i * step~.
 
