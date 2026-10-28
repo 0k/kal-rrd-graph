@@ -35,7 +35,7 @@ api = ["watch", "dep:axum", "kal-sse/axum", "dep:tokio", "dep:futures-core", "de
 [dependencies]
 rrd = "0.3.1"
 kal-fs-watch = { version = "0.1", optional = true }
-kal-sse = { version = "0.2", optional = true }
+kal-sse = { version = "0.3.0", optional = true }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
