@@ -13,7 +13,11 @@ configuration reload policy: those belong to the application.
 
 * Usage
 
-Add ~kal-rrd-graph = "0.1"~ to ~Cargo.toml~.
+Add the dependency:
+
+#+begin_src sh
+cargo add kal-rrd-graph
+#+end_src
 
 Building requires librrd 1.5 or newer, its development headers and
 ~pkg-config~. On Debian/Ubuntu install ~librrd-dev~ and ~pkg-config~;
