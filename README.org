@@ -9,9 +9,7 @@
 =kal-rrd-graph= describes, fetches, watches and serves one RRD graph.
 It reads through =rrd= / librrd and never writes RRD files outside tests.
 It does not know about application groups, side panels, ranges, slugs or
-configuration reload policy: those belong to the application. A web
-frontend can draw the served graph with the companion Vue package
-=@0k/rrd-graph=.
+configuration reload policy: those belong to the application.
 
 * Usage
 
@@ -226,3 +224,8 @@ cargo test
 * License
 
 MIT, Valentin Lab.
+
+* Companion packages
+
+A web frontend can draw the served graph with the Vue package
+=@0k/rrd-graph=.
