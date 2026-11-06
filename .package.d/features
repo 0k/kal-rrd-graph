@@ -1,0 +1,4 @@
+# Packaging choices: crates.io only, no GitHub release page.
+published
+registry
+formatted
